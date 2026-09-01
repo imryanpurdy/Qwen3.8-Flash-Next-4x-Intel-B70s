@@ -1,0 +1,8 @@
+# Local secrets — never commit (docs/lanes/deploy-kit-contract.md D6)
+.env
+
+# Runtime state (watchdog pids, server logs, wedge captures, manifest, receipts)
+.run/
+
+# Overlay artifacts are staged separately (see files/overlay/README.md)
+files/overlay/*.patch

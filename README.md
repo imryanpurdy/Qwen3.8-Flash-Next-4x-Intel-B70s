@@ -29,12 +29,42 @@ MTP3 is the preferred 4K recipe. Reference point: the same-class fully-built sta
 
 ## Deploy kit (contract: `docs/lanes/deploy-kit-contract.md`)
 
-Mia-style clone-and-run: `start.sh · stop.sh · check-weights.sh · wedge-watchdog.sh · .env.sample · files/`. Kit scripts land here as they're built (in flight, committed on arrival). Key decisions:
+Docker-first, Mia-style clone-and-run: `cp .env.sample .env → edit → ./build-image.sh → ./start.sh → verify`. Kit scripts: `start.sh · stop.sh · check-weights.sh · wedge-watchdog.sh · build-image.sh · .env.sample · Dockerfile · files/`. Key decisions:
 
-- **Docker-first** (decided 2026-09-01): image = vLLM XPU runtime base + pinned toolchain + overlay series 0002–0018 + QSA kernels; `/dev/dri` passthrough; host HF cache bind-mounted; weights persist outside the container.
-- **Wedge watchdog mandatory**: the Xe2 Level-Zero wedge kills the job every 2–6 h under load — start.sh refuses to launch without it (double opt-out to disable).
-- **Preflight gate**: 4×XPU visible, host swap ≥64 GiB, ~200 GiB disk, ≥40 GiB root free — fail with actionable errors.
-- **Receipts**: every launch writes `.run/manifest.json`; only measured anchors are ever quoted, spec targets stay marked as targets.
+- **Docker-first** (decided 2026-09-01): image = vLLM XPU runtime base + pinned toolchain + overlay series 0001–0010,0012,0014–0018 + QSA kernels + certified kernel stage; `/dev/dri` passthrough with device-cgroup rules + `--group-add video/render`; host HF cache bind-mounted; weights persist outside the container.
+- **Wedge watchdog mandatory**: the Xe2 Level-Zero wedge kills the job every 2–6 h under load — start.sh refuses to launch without it (double opt-out to disable: `WEDGE_WATCHDOG_DISABLE=1` **and** `--no-preflight`).
+- **Preflight gate**: exactly 4×XPU visible, host RAM ≥100 GiB, swap ≥64 GiB ON, ≥200 GiB free on the weights mount (checkpoint tree = 185.56 GB), ≥40 GiB root free — fail with actionable errors; `--no-preflight` records `PREFLIGHT_SKIPPED=1` loudly.
+- **Receipts**: every launch writes `.run/manifest.json` (env hash, git describe, .env minus secrets, epoch); only measured anchors are ever quoted, spec targets stay marked as targets.
+
+### Quick Start (3 steps)
+
+1. **Copy + edit the config** — `cp .env.sample .env`, set `HF_TOKEN` (or rely on the host HF cache mount), confirm `MAX_MODEL_LEN` and `PORT`. The defaults ARE the measured lab identity: `TENSOR_PARALLEL_SIZE=4` (TP∈{2,4,8}; 2 KV heads, TP6 impossible), `ENABLE_EXPERT_PARALLEL=true` (EP4), `MTP_NUM_SPECULATIVE_TOKENS=3` (the qualified 4K serving target), `MAX_NUM_BATCHED_TOKENS=64` (frozen lab baseline — Lane-4 sweep pending), `PLE_CPU_OFFLOAD_GB=12.25` (≈51.2 GiB pinned host), `GRAPH_MODE=eager` (graphs quarantined a1–a7).
+2. **Build the image** — `./build-image.sh` builds the local `IMAGE` tag (`qwen38-flash-next-xpu:4xb70`) from `Dockerfile`: vLLM XPU runtime base + pinned toolchain (py 3.12.13, torch 2.11.0+xpu, triton-xpu 3.7.0, transformers 5.10.2) + the 16-patch vLLM overlay + QSA kernels + the certified kernel stage `2f829747`. **Fails fast** while `files/overlay/` artifacts are lab-staged, not vendored (see `files/overlay/README.md` for provenance), and while the unfrozen `BASE_IMAGE` / `RUNTIME_STAGE_URL` / `RUNTIME_STAGE_SHA256` pins are unfilled.
+3. **Start** — `./start.sh`. PREFLIGHT (non-skippable) → weights auto-skip / HF download → `check-weights.sh` identity gate (frozen hash hard-fail) → mandatory wedge watchdog → `docker run` with `/dev/dri` passthrough → readiness poll (`/v1/models`, up to 15 min — a 185.56 GB tree takes minutes to load) → verification greps below.
+
+Stop: `./stop.sh` (graceful — watchdog TERM first, then container). Flags: `--no-download` `--no-launch` `--launch` `--no-preflight` (Mia semantics + preflight opt-out). Never run without the watchdog unless you accept the double opt-out and its red banner.
+
+### Verify it came up
+
+`./start.sh` prints these greps against `.run/server.log` with the EXPECTED values:
+
+| Check | log pattern | EXPECTED (lab anchor) |
+|---|---|---|
+| KV pool | `KV cache size` | MTP3-4K authority geometry **294,195,200 B (25 blocks)**; actual scales with `MAX_MODEL_LEN` |
+| PLE placement | `uva` / `offload` / `pinned` | **12.22 GiB/rank (13,117,911,040 B) × 4 ≈ 51.2 GiB** pinned host RAM (`cpu_offload_gb=12.25`) |
+| Served model | served model name | your `SERVED_MODEL_NAME` answering on `/v1/models` |
+| Graph status | `eager` | **eager** — no graph flags passed (graphs quarantined-negative a1–a7) |
+
+First-request sanity: `curl http://localhost:8000/v1/models` lists the served name. Measured anchors for this section (same cells as the Status table above — protected, never implied as deploy targets):
+
+| Cell | tok/s | TTFT |
+|---|---|---|
+| MTP0 @512 (protected anchor) | 5.515783 | — |
+| **MTP3 @4K (preferred cell)** | **15.502** | **187.9 s** |
+| MTP4 @512 (screen) | 20.727 | ~11 s |
+| MTP0 @8K (screened) | 3.980 | 386.5 s |
+
+**Troubleshooting** — wedge watchdog behaviour: a wedge shows as engine-reset/`guc_exec_queue_timedout_job` in the kernel journal; the watchdog captures `.run/wedge-<ts>.log`, restarts up to `WEDGE_WATCHDOG_RETRIES=3` times, then gives up loudly — in-flight requests are lost on restart. OOM-during-compile / graphs: see `docs/lanes/lane1` (host-RAM pressure during post-load Dynamo/Inductor compile — root/swap floors and a clean boot are mandatory; 64 GiB swap is NOT the fix). Slow first token (TTFT 187.9 s @4K): see `docs/lanes/lane4` — `MAX_NUM_BATCHED_TOKENS=64` is the untested-axis smoking gun; the 512/2048/4096 sweep is pending.
 
 ## Evidence (`docs/evidence/`)
 
