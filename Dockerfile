@@ -32,13 +32,13 @@
 #    §Runtime identity). This Dockerfile pins the observed versions and FAILS
 #    if they cannot be installed - it never silently upgrades. If a pin cannot
 #    resolve, supply the operator's verified wheels instead of relaxing pins.
-# 2) PLACEHOLDERS. BASE_IMAGE, RUNTIME_STAGE_URL (asset name) and
-#    RUNTIME_STAGE_SHA256 (full 64-hex) are NOT frozen in any lane spec. They
-#    are placeholders that must be filled in at first rig staging; the build
-#    FAILS FAST with a clear message while they are unfilled.
-# 3) OVERLAY ARTIFACTS. files/overlay/ is lab staging, not yet vendored
-#    (see files/overlay/README.md). If the patches/copies are missing the build
-#    fails with an explicit message - no silent no-op serving.
+# 2) PLACEHOLDERS — RESOLVED at first rig staging (2026-09-04): BASE_IMAGE is
+#    pinned in FROM (intel/llm-scaler-vllm:0.21.0-b1), and the RUNTIME_STAGE
+#    splits (part-0000 + part-0001) + full 64-hex SHA are filled in below.
+#    The build no longer fails-fast on unfilled pins.
+# 3) OVERLAY ARTIFACTS. files/overlay/ is now VENDORED (2026-09-04): the 16
+#    production patches + qsa_ops.py ship in the repo. If any are missing the
+#    build fails with an explicit message - no silent no-op serving.
 # 4) IDENTITY CHECKS. The pip metadata lies (0.20.2rc1.dev2+...xpu editable);
 #    the vLLM source overlay is authoritative. This Dockerfile re-checks
 #    version strings at build time; full tree-hash verification (31ebb778...)
@@ -51,49 +51,34 @@
 # Verified on the rig: torch 2.11.0+xpu, triton 3.7.0, vllm 0.21.1.dev0,
 # vllm-xpu-kernels present, python 3.12.3.
 # docker.io/intel/llm-scaler-vllm:0.21.0-b1 @ sha256:5d87be271e4d...
-FROM docker.io/intel/llm-scaler-vllm:0.21.0-b1
+#
+# GLOBAL ARG DEFAULTS (must be declared BEFORE the first FROM so the values
+# persist into every build stage — re-declaring them after FROM without a
+# default resets them to empty under the legacy builder).
+ARG PYTHON_VERSION="3.12.3"
 ARG TORCH_VERSION="2.11.0"
 ARG TRITON_XPU_VERSION="3.7.0"
 ARG TRANSFORMERS_VERSION="5.10.2"
 ARG ONECCLL_VERSION="2021.17.2"
 ARG ONEAPI_VERSION="2025.3.2"
-
-# vLLM source overlay identity (00-shared-context §Runtime identity)
 ARG VLLM_BASE_COMMIT="76cfe1cd88d30d525eec8be5bff75f8b77471c88"
 ARG VLLM_HEAD_COMMIT="1372c62d975c554f4b465c8299bc5f3295301ceb"
 ARG VLLM_TREE_HASH="31ebb778..."
-
-# XPU-kernel runtime stage (loaded stage, NOT ad25aa9f)
 ARG VXK_STAGE="2f829747503c77d4814834dffd0840fb1dd9f75a"
 ARG VXK_TREE_HASH="d8c4318a..."
-# RUNTIME_STAGE_SHA256 — RESOLVED at first rig staging: the release ships the
-# 18-file hybrid stage SPLIT across two Gigabreak parts (part-0000 1.07 GB +
-# part-0001 894 MB). The FULL 64-hex SHA below is the assembled tar's digest
-# from the release receipt.json (archive.sha256), matching the lane-spec
-# prefix 6bf1b547... — so the build concatenates part-0000+part-0001 then
-# verifies against this value. Build hard-fails while unfilled/zeros.
 ARG RUNTIME_STAGE_SHA256="6bf1b547e3887c86007f5ef5ad7c67be365ce4888f0e2c0a1f360dde7a7b13c3"
-# RUNTIME_STAGE URLs — RESOLVED at first rig staging: the exact GitHub asset
-# download URLs for the two split parts under the steveseguin/b70-optimization-lab
-# prerelease qwen38-flash-next-runtime-2f829747-20260827. The Dockerfile
-# downloads BOTH, concatenates (part-0000 then part-0001), and verifies.
 ARG RUNTIME_STAGE_URL_PART0="https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/qwen38-flash-next-runtime-stage-2f829747.tar.part-0000"
 ARG RUNTIME_STAGE_URL_PART1="https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/qwen38-flash-next-runtime-stage-2f829747.tar.part-0001"
-
-# QSA Triton kernels (merged PR #53896 extract, /tmp/qsa_ops.py).
-# ASSUMPTION: the in-tree destination path is not named in the lane specs;
-# the upstream layout puts Qwen sparse-attention kernels under
-# vllm/model_executor/layers/qwen_sparse/. Confirm on the rig (flagged).
 ARG QSA_OPS_DEST="vllm/model_executor/layers/qwen_sparse/qsa_ops.py"
+
+FROM docker.io/intel/llm-scaler-vllm:0.21.0-b1
 
 # Kernel-stage install root. ASSUMPTION: stage load mechanism (PYTHONPATH /
 # KERNEL_STAGE env) is lab-specific; see files/overlay/README.md.
 ENV KERNEL_STAGE="/opt/vllm-xpu-kernels/stage"
 
 # Base sanity: pinned Python must actually be present in the base image.
-# PYTHON_VERSION: lane spec says 3.12.13 (lab build env) but the verified base
-# intel/llm-scaler-vllm:0.21.0-b1 carries python 3.12.3 — set to match the base.
-ARG PYTHON_VERSION="3.12.3"
+# PYTHON_VERSION (global default 3.12.3) matches the verified base's python.
 RUN python3 - <<PYEOF
 import sys
 want = tuple(int(x) for x in "${PYTHON_VERSION}".split("."))
