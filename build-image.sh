@@ -75,30 +75,31 @@ fi
 ok "Overlay artifacts present (16 production patches + qsa_ops.py)."
 
 # ---------------------------------------------------------------------------
-# 2. BASE_IMAGE — unfrozen placeholder. Require it explicitly; never guess.
+# 2. BASE_IMAGE — RESOLVED at first rig staging: the vLLM XPU runtime base is
+#    intel/llm-scaler-vllm:0.21.0-b1, pinned to the lab-validated digest
+#    5d87be271e4d... (docker.io/intel/llm-scaler-vllm@sha256:5d87be271e4db54539f1dbb29c071e9122f4e57b74594dbb26a55d27a569d780).
+#    Verified on the rig: torch 2.11.0+xpu, triton 3.7.0, vllm 0.21.1.dev0,
+#    vllm-xpu-kernels present, python 3.12.3. Override only with a base your
+#    rig stage validates.
 # ---------------------------------------------------------------------------
 if [[ -z "${BASE_IMAGE:-}" ]]; then
-    err "BASE_IMAGE is NOT frozen in any lane spec and must be supplied per build (Dockerfile ARG).
-  Pass it on the command line or in .env, e.g.:
-    BASE_IMAGE=vllm/vllm-openai:xpu ./build-image.sh
-  Pick the vLLM-XPU runtime base your rig stage validates (oneAPI 2025.3.2 /
-  libsycl.so.8 ABI, vllm-xpu-kernels). First rig staging must CONFIRM the tag
-  and then this kit should freeze it. (flagged in the authoring summary)"
+    BASE_IMAGE="docker.io/intel/llm-scaler-vllm:0.21.0-b1"
 fi
 ok "BASE_IMAGE='$BASE_IMAGE'"
 
 # ---------------------------------------------------------------------------
-# 3. Runtime-stage pins — default to the Dockerfile placeholders (unfilled).
-#    The Dockerfile hard-fails with a clear message at that step. Override per
-#    build: RUNTIME_STAGE_URL=... RUNTIME_STAGE_SHA256=... ./build-image.sh
+# 3. Runtime-stage pins — RESOLVED at first rig staging. The release ships the
+#    18-file hybrid stage SPLIT across two parts; the Dockerfile downloads both,
+#    concatenates, and verifies the assembled tar against RUNTIME_STAGE_SHA256.
+#    Override per build only if the release moves.
 # ---------------------------------------------------------------------------
-RUNTIME_STAGE_URL="${RUNTIME_STAGE_URL:-https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/ASSET-NAME-PLACEHOLDER}"
-RUNTIME_STAGE_SHA256="${RUNTIME_STAGE_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}"
-warn "Runtime-stage pins (unfrozen, from the lane specs):"
+RUNTIME_STAGE_URL_PART0="${RUNTIME_STAGE_URL_PART0:-https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/qwen38-flash-next-runtime-stage-2f829747.tar.part-0000}"
+RUNTIME_STAGE_URL_PART1="${RUNTIME_STAGE_URL_PART1:-https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/qwen38-flash-next-runtime-stage-2f829747.tar.part-0001}"
+RUNTIME_STAGE_SHA256="${RUNTIME_STAGE_SHA256:-6bf1b547e3887c86007f5ef5ad7c67be365ce4888f0e2c0a1f360dde7a7b13c3}"
+warn "Runtime-stage pins (resolved at first rig staging):"
 warn "  release tag   : qwen38-flash-next-runtime-2f829747-20260827 (steveseguin/b70-optimization-lab)"
-warn "  SHA prefix    : 6bf1b547... (FULL 64-hex must be filled)"
-warn "  asset name    : NOT in the lane specs — must be confirmed per build"
-warn "  If unfilled, the Dockerfile kernel-stage step fails with a clear message."
+warn "  parts         : part-0000 (~1.07 GB) + part-0001 (~894 MB), concatenated then SHA-verified"
+warn "  full SHA      : ${RUNTIME_STAGE_SHA256}"
 
 # ---------------------------------------------------------------------------
 # 4. Build
@@ -106,7 +107,8 @@ warn "  If unfilled, the Dockerfile kernel-stage step fails with a clear message
 info "Building image '$IMAGE' (this can take a long time: source-overlay pip install + kernel stage)..."
 docker build \
     --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
-    --build-arg "RUNTIME_STAGE_URL=${RUNTIME_STAGE_URL}" \
+    --build-arg "RUNTIME_STAGE_URL_PART0=${RUNTIME_STAGE_URL_PART0}" \
+    --build-arg "RUNTIME_STAGE_URL_PART1=${RUNTIME_STAGE_URL_PART1}" \
     --build-arg "RUNTIME_STAGE_SHA256=${RUNTIME_STAGE_SHA256}" \
     -t "$IMAGE" \
     "$SCRIPT_DIR"

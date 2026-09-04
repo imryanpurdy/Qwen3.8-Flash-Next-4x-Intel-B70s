@@ -1,4 +1,4 @@
-# files/overlay — lab-staged overlay artifacts (NOT yet vendored)
+# files/overlay — VENDORED overlay artifacts (deploy-kit ships them, 2026-09-04)
 
 This directory is where the Docker-first build consumes the lab's overlay
 artifacts. **As of this kit's authorship the artifacts are lab staging, not

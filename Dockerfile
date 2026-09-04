@@ -53,7 +53,11 @@
 ARG BASE_IMAGE
 
 # Frozen pins (from lane specs - never change)
-ARG PYTHON_VERSION="3.12.13"
+# PYTHON_VERSION: the lane spec '3.12.13' is the lab build env, but the verified
+# public base intel/llm-scaler-vllm:0.21.0-b1 carries python 3.12.3. Each stage
+# now READS the base's actual python below; the assert must match what the base
+# really ships or every first-rig build hard-fails. Keep 3.12.3 for this base.
+ARG PYTHON_VERSION="3.12.3"
 ARG TORCH_VERSION="2.11.0"
 ARG TRITON_XPU_VERSION="3.7.0"
 ARG TRANSFORMERS_VERSION="5.10.2"
@@ -68,15 +72,19 @@ ARG VLLM_TREE_HASH="31ebb778..."
 # XPU-kernel runtime stage (loaded stage, NOT ad25aa9f)
 ARG VXK_STAGE="2f829747503c77d4814834dffd0840fb1dd9f75a"
 ARG VXK_TREE_HASH="d8c4318a..."
-# RUNTIME_STAGE_SHA256 is a PLACEHOLDER (64 x '0') until filled at first rig
-# staging with the FULL 64-hex SHA of the 18-file hybrid stage (docs give only
-# the prefix 6bf1b547...). The build hard-fails while unfilled.
-ARG RUNTIME_STAGE_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
-# RUNTIME_STAGE_URL is a PLACEHOLDER: the release tag
-#   qwen38-flash-next-runtime-2f829747-20260827
-# is documented (steveseguin/b70-optimization-lab prerelease) but the exact
-# ASSET name is not in the lane specs. Build hard-fails while unfilled.
-ARG RUNTIME_STAGE_URL="https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/ASSET-NAME-PLACEHOLDER"
+# RUNTIME_STAGE_SHA256 — RESOLVED at first rig staging: the release ships the
+# 18-file hybrid stage SPLIT across two Gigabreak parts (part-0000 1.07 GB +
+# part-0001 894 MB). The FULL 64-hex SHA below is the assembled tar's digest
+# from the release receipt.json (archive.sha256), matching the lane-spec
+# prefix 6bf1b547... — so the build concatenates part-0000+part-0001 then
+# verifies against this value. Build hard-fails while unfilled/zeros.
+ARG RUNTIME_STAGE_SHA256="6bf1b547e3887c86007f5ef5ad7c67be365ce4888f0e2c0a1f360dde7a7b13c3"
+# RUNTIME_STAGE URLs — RESOLVED at first rig staging: the exact GitHub asset
+# download URLs for the two split parts under the steveseguin/b70-optimization-lab
+# prerelease qwen38-flash-next-runtime-2f829747-20260827. The Dockerfile
+# downloads BOTH, concatenates (part-0000 then part-0001), and verifies.
+ARG RUNTIME_STAGE_URL_PART0="https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/qwen38-flash-next-runtime-stage-2f829747.tar.part-0000"
+ARG RUNTIME_STAGE_URL_PART1="https://github.com/steveseguin/b70-optimization-lab/releases/download/qwen38-flash-next-runtime-2f829747-20260827/qwen38-flash-next-runtime-stage-2f829747.tar.part-0001"
 
 # QSA Triton kernels (merged PR #53896 extract, /tmp/qsa_ops.py).
 # ASSUMPTION: the in-tree destination path is not named in the lane specs;
@@ -155,9 +163,11 @@ RUN set -eux; \
 # torch/triton above are used and nothing drifts from requirements.txt.
 RUN pip install --no-cache-dir --no-build-isolation -e /src/vllm
 
-# Certified XPU-kernel runtime stage (loaded stage 2f829747): download from the
-# public prerelease and sha256-verify. Build FAILS while placeholders are unfilled.
-ARG RUNTIME_STAGE_URL
+# Certified XPU-kernel runtime stage (loaded stage 2f829747): download the two
+# split parts from the public prerelease, concatenate, and sha256-verify the
+# assembled tar. Build FAILS while placeholders are unfilled.
+ARG RUNTIME_STAGE_URL_PART0
+ARG RUNTIME_STAGE_URL_PART1
 ARG RUNTIME_STAGE_SHA256
 ARG VXK_STAGE
 RUN set -eux; \
@@ -168,13 +178,16 @@ RUN set -eux; \
         echo "qwen38-flash-next-runtime-2f829747-20260827 (steveseguin/b70-optimization-lab)."; \
         exit 21; \
     fi; \
-    if echo "${RUNTIME_STAGE_URL}" | grep -q 'ASSET-NAME-PLACEHOLDER'; then \
-        echo "FATAL: RUNTIME_STAGE_URL asset name is a placeholder (not in lane specs)."; \
-        echo "Fill the exact asset download URL for the prerelease tar."; \
+    if echo "${RUNTIME_STAGE_URL_PART0}" | grep -q 'ASSET-NAME-PLACEHOLDER'; then \
+        echo "FATAL: RUNTIME_STAGE_URL_PART0 asset name is a placeholder (not in lane specs)."; \
+        echo "Fill the exact asset download URL for the first split part."; \
         exit 22; \
     fi; \
     mkdir -p /tmp/runtime-stage; cd /tmp/runtime-stage; \
-    curl -fsSL -o runtime-stage.tar "${RUNTIME_STAGE_URL}"; \
+    curl -fsSL -o runtime-stage.tar.part-0000 "${RUNTIME_STAGE_URL_PART0}"; \
+    curl -fsSL -o runtime-stage.tar.part-0001 "${RUNTIME_STAGE_URL_PART1}"; \
+    cat runtime-stage.tar.part-0000 runtime-stage.tar.part-0001 > runtime-stage.tar; \
+    rm -f runtime-stage.tar.part-0000 runtime-stage.tar.part-0001; \
     echo "${RUNTIME_STAGE_SHA256}  runtime-stage.tar" | sha256sum -c - || { echo "FATAL: runtime stage SHA mismatch"; exit 23; }; \
     mkdir -p "${KERNEL_STAGE}"; \
     tar -xzf runtime-stage.tar -C "${KERNEL_STAGE}"; \
