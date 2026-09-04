@@ -107,6 +107,7 @@ RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
 # Unset the baked-in Intel-internal proxy for the GitHub clone.
 ARG VLLM_BASE_COMMIT
 ARG VLLM_HEAD_COMMIT
+ARG VLLM_TREE_HASH
 RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
     git clone --filter=blob:none https://github.com/vllm-project/vllm /src/vllm \
     && git -C /src/vllm checkout -q ${VLLM_BASE_COMMIT}
