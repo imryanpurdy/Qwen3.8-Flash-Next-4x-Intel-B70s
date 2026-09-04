@@ -148,9 +148,14 @@ RUN set -eux; \
 
 # Install the overlay from source (editable), build isolation OFF so the pinned
 # torch/triton above are used and nothing drifts from requirements.txt.
+# The base image's global setuptools lacks the setuptools-rust backend that
+# vLLM's build requires, so build isolation (off) surfaces a bare
+# 'No module named setuptools_rust'. Install setuptools-rust (and pin
+# setuptools/wheel first) into the environment before the editable install.
 # Unset the baked-in Intel-internal proxy (see toolchain NOTE) for any deps.
 RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
-    pip install --no-cache-dir --no-build-isolation -e /src/vllm
+    pip install --no-cache-dir "setuptools>=65" wheel "setuptools-rust>=1.6" \
+    && pip install --no-cache-dir --no-build-isolation -e /src/vllm
 
 # Certified XPU-kernel runtime stage (loaded stage 2f829747): download the two
 # split parts from the public prerelease, concatenate, and sha256-verify the
