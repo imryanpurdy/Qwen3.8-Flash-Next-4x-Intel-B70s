@@ -152,10 +152,15 @@ RUN set -eux; \
 # vLLM's build requires, so build isolation (off) surfaces a bare
 # 'No module named setuptools_rust'. Install setuptools-rust (and pin
 # setuptools/wheel first) into the environment before the editable install.
+# --no-deps: the frozen source declares triton==3.7.2+xpu, which exists only
+# on the lab's internal index and NOT on any public one. The base image
+# already carries the validated XPU stack (torch 2.11.0+xpu, triton-xpu
+# 3.7.0, all runtime deps), so install the overlay wheel without re-resolving
+# deps we've already pinned. Strict no-drift: no frozen version changes.
 # Unset the baked-in Intel-internal proxy (see toolchain NOTE) for any deps.
 RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
     pip install --no-cache-dir "setuptools>=65" wheel "setuptools-rust>=1.6" \
-    && pip install --no-cache-dir --no-build-isolation -e /src/vllm
+    && pip install --no-cache-dir --no-build-isolation --no-deps -e /src/vllm
 
 # Certified XPU-kernel runtime stage (loaded stage 2f829747): download the two
 # split parts from the public prerelease, concatenate, and sha256-verify the
