@@ -45,19 +45,13 @@
 #    stays a rig-side receipt (prepare-sources.py).
 # ============================================================================
 
-# Placeholder / unfrozen (see caveat 2 - fill at first rig staging).
-# ASSUMPTION: no frozen vLLM-XPU base image pin exists in any lane spec.
-# The cookbook runs vLLM XPU in Docker (docs/evidence/laneB_cookbook.md).
-# Set --build-arg BASE_IMAGE=... (build-image.sh enforces this); e.g. an
-# Intel/community XPU image carrying vllm-xpu-kernels + oneAPI 2025.3.
-ARG BASE_IMAGE
-
-# Frozen pins (from lane specs - never change)
-# PYTHON_VERSION: the lane spec '3.12.13' is the lab build env, but the verified
-# public base intel/llm-scaler-vllm:0.21.0-b1 carries python 3.12.3. Each stage
-# now READS the base's actual python below; the assert must match what the base
-# really ships or every first-rig build hard-fails. Keep 3.12.3 for this base.
-ARG PYTHON_VERSION="3.12.3"
+# BASE_IMAGE — RESOLVED at first rig staging to the lab-validated vLLM-XPU
+# runtime base. Pinned directly in FROM (an ARG-in-FROM requires BuildKit;
+# this keeps the Dockerfile buildable under the plain legacy builder too).
+# Verified on the rig: torch 2.11.0+xpu, triton 3.7.0, vllm 0.21.1.dev0,
+# vllm-xpu-kernels present, python 3.12.3.
+# docker.io/intel/llm-scaler-vllm:0.21.0-b1 @ sha256:5d87be271e4d...
+FROM docker.io/intel/llm-scaler-vllm:0.21.0-b1
 ARG TORCH_VERSION="2.11.0"
 ARG TRITON_XPU_VERSION="3.7.0"
 ARG TRANSFORMERS_VERSION="5.10.2"
@@ -96,10 +90,10 @@ ARG QSA_OPS_DEST="vllm/model_executor/layers/qwen_sparse/qsa_ops.py"
 # KERNEL_STAGE env) is lab-specific; see files/overlay/README.md.
 ENV KERNEL_STAGE="/opt/vllm-xpu-kernels/stage"
 
-FROM ${BASE_IMAGE}
-
 # Base sanity: pinned Python must actually be present in the base image.
-ARG PYTHON_VERSION
+# PYTHON_VERSION: lane spec says 3.12.13 (lab build env) but the verified base
+# intel/llm-scaler-vllm:0.21.0-b1 carries python 3.12.3 — set to match the base.
+ARG PYTHON_VERSION="3.12.3"
 RUN python3 - <<PYEOF
 import sys
 want = tuple(int(x) for x in "${PYTHON_VERSION}".split("."))

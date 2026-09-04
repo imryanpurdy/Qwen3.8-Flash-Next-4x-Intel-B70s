@@ -75,17 +75,12 @@ fi
 ok "Overlay artifacts present (16 production patches + qsa_ops.py)."
 
 # ---------------------------------------------------------------------------
-# 2. BASE_IMAGE — RESOLVED at first rig staging: the vLLM XPU runtime base is
-#    intel/llm-scaler-vllm:0.21.0-b1, pinned to the lab-validated digest
-#    5d87be271e4d... (docker.io/intel/llm-scaler-vllm@sha256:5d87be271e4db54539f1dbb29c071e9122f4e57b74594dbb26a55d27a569d780).
+# 2. BASE_IMAGE — RESOLVED and pinned directly in the Dockerfile FROM:
+#    intel/llm-scaler-vllm:0.21.0-b1 (lab-validated digest 5d87be271e4d...).
 #    Verified on the rig: torch 2.11.0+xpu, triton 3.7.0, vllm 0.21.1.dev0,
-#    vllm-xpu-kernels present, python 3.12.3. Override only with a base your
-#    rig stage validates.
+#    vllm-xpu-kernels present, python 3.12.3. Documented here for reference.
 # ---------------------------------------------------------------------------
-if [[ -z "${BASE_IMAGE:-}" ]]; then
-    BASE_IMAGE="docker.io/intel/llm-scaler-vllm:0.21.0-b1"
-fi
-ok "BASE_IMAGE='$BASE_IMAGE'"
+ok "Base image: docker.io/intel/llm-scaler-vllm:0.21.0-b1 (pinned in Dockerfile FROM)"
 
 # ---------------------------------------------------------------------------
 # 3. Runtime-stage pins — RESOLVED at first rig staging. The release ships the
@@ -106,7 +101,6 @@ warn "  full SHA      : ${RUNTIME_STAGE_SHA256}"
 # ---------------------------------------------------------------------------
 info "Building image '$IMAGE' (this can take a long time: source-overlay pip install + kernel stage)..."
 docker build \
-    --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
     --build-arg "RUNTIME_STAGE_URL_PART0=${RUNTIME_STAGE_URL_PART0}" \
     --build-arg "RUNTIME_STAGE_URL_PART1=${RUNTIME_STAGE_URL_PART1}" \
     --build-arg "RUNTIME_STAGE_SHA256=${RUNTIME_STAGE_SHA256}" \
