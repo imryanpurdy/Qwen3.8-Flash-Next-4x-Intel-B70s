@@ -190,7 +190,9 @@ RUN set -eux; \
     rm -f runtime-stage.tar.part-0000 runtime-stage.tar.part-0001; \
     echo "${RUNTIME_STAGE_SHA256}  runtime-stage.tar" | sha256sum -c - || { echo "FATAL: runtime stage SHA mismatch"; exit 23; }; \
     mkdir -p "${KERNEL_STAGE}"; \
-    tar -xzf runtime-stage.tar -C "${KERNEL_STAGE}"; \
+    # receipt.json reports compression:"none" for this stage, so unpack a
+    # plain tar (NOT gzip) — tar -xzf would fail "not in gzip format".
+    tar -xf runtime-stage.tar -C "${KERNEL_STAGE}"; \
     FILES=$(find "${KERNEL_STAGE}" -type f | wc -l); \
     echo "kernel stage ${VXK_STAGE}: ${FILES} files installed in ${KERNEL_STAGE}"; \
     test "$FILES" -ge 18 || { echo "FATAL: expected the 18-file hybrid stage, found ${FILES}"; exit 24; }
