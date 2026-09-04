@@ -210,7 +210,9 @@ ENV KERNEL_STAGE="${KERNEL_STAGE}" \
 
 # Final smoke: the installed vLLM must be the overlay with the QSA module in
 # place (pip metadata is a lie — check the source marker explicitly).
-RUN python3 -c 'import vllm, os; p=os.path.dirname(vllm.__file__); assert os.path.isdir(os.path.join(p,"model_executor","layers","qwen_sparse")), "QSA kernels missing from overlay"; print("vllm overlay import OK:", vllm.__version__)'
+# NOTE: the overlay is an editable (PEP 660) install, so vllm.__file__ is
+# often None — resolve the package directory via find_spec().submodule_search_locations.
+RUN python3 -c 'import vllm, os, importlib.util; spec=importlib.util.find_spec("vllm"); base=(spec.submodule_search_locations or [os.path.dirname(spec.origin or "")])[0] if spec else ""; assert os.path.isdir(os.path.join(base,"model_executor","layers","qwen_sparse")), "QSA kernels missing from overlay: "+base; print("vllm overlay import OK at", base, ":", vllm.__version__)'
 
 LABEL recipe="Qwen3.8-Flash-Next-FP8/4x-B70" \
       model.identity="bcd9f01ddc9cff2316eb84281bebcd5b058bddce" \
