@@ -1,10 +1,9 @@
 # files/overlay — VENDORED overlay artifacts (deploy-kit ships them, 2026-09-04)
 
 This directory is where the Docker-first build consumes the lab's overlay
-artifacts. **As of this kit's authorship the artifacts are lab staging, not
-vendored** — the repo ships the *contract* (Dockerfile expects them), and the
-build fails fast with a clear message while they are missing. Nothing here may
-be silently skipped.
+artifacts. **As of 2026-09-04 the artifacts ARE vendored in the repo** — the
+16 production vLLM patches and the QSA kernel module ship with the deploy kit,
+so an internet user can pull, build, and run without access to the lab tree.
 
 ## Expected layout (the DOCKERFILE reads exactly this)
 

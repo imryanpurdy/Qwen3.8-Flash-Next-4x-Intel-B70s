@@ -90,18 +90,25 @@ PYEOF
 # Pinned XPU toolchain (observed-not-installable: strict, no drift).
 # Source requirements say torch 2.13.0 / triton 3.7.2, but the OBSERVED stack
 # is torch 2.11.0+xpu / triton-xpu 3.7.0 - do NOT "helpfully" upgrade.
+# NOTE: the base image bakes in an Intel-internal HTTP(S)_PROXY
+# (proxy.iil.intel.com:911) that does not resolve off the Intel network and
+# breaks pip installs of anything not already present. Unset it for this
+# install (and below) so the recipe builds for any internet user.
 ARG TORCH_VERSION
 ARG TRITON_XPU_VERSION
 ARG TRANSFORMERS_VERSION
-RUN pip install --no-cache-dir "torch==${TORCH_VERSION}+xpu" --index-url https://download.pytorch.org/whl/xpu \
+RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
+    pip install --no-cache-dir "torch==${TORCH_VERSION}+xpu" --index-url https://download.pytorch.org/whl/xpu \
     && pip install --no-cache-dir "triton-xpu==${TRITON_XPU_VERSION}" "transformers==${TRANSFORMERS_VERSION}"
 
 # vLLM source overlay - reconstruct tree 31ebb778... = base + 16 production
 # patches. Clone upstream, check out the frozen base, apply the production
 # series, and emit identity receipts (full tree-hash verify stays rig-side).
+# Unset the baked-in Intel-internal proxy for the GitHub clone.
 ARG VLLM_BASE_COMMIT
 ARG VLLM_HEAD_COMMIT
-RUN git clone --filter=blob:none https://github.com/vllm-project/vllm /src/vllm \
+RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
+    git clone --filter=blob:none https://github.com/vllm-project/vllm /src/vllm \
     && git -C /src/vllm checkout -q ${VLLM_BASE_COMMIT}
 
 # Overlay artifacts come from files/ (build context). build-image.sh fails fast
@@ -140,7 +147,9 @@ RUN set -eux; \
 
 # Install the overlay from source (editable), build isolation OFF so the pinned
 # torch/triton above are used and nothing drifts from requirements.txt.
-RUN pip install --no-cache-dir --no-build-isolation -e /src/vllm
+# Unset the baked-in Intel-internal proxy (see toolchain NOTE) for any deps.
+RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
+    pip install --no-cache-dir --no-build-isolation -e /src/vllm
 
 # Certified XPU-kernel runtime stage (loaded stage 2f829747): download the two
 # split parts from the public prerelease, concatenate, and sha256-verify the
@@ -163,6 +172,7 @@ RUN set -eux; \
         exit 22; \
     fi; \
     mkdir -p /tmp/runtime-stage; cd /tmp/runtime-stage; \
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
     curl -fsSL -o runtime-stage.tar.part-0000 "${RUNTIME_STAGE_URL_PART0}"; \
     curl -fsSL -o runtime-stage.tar.part-0001 "${RUNTIME_STAGE_URL_PART1}"; \
     cat runtime-stage.tar.part-0000 runtime-stage.tar.part-0001 > runtime-stage.tar; \
