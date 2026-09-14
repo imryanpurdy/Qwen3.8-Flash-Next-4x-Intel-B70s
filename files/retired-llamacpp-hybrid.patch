@@ -1,0 +1,1141 @@
+From 691a81d5f548fa57bc7d27279cb0c0f9f4ce51be Mon Sep 17 00:00:00 2001
+From: flashnext-hybrid <hybrid@flashnext.local>
+Date: Mon, 31 Aug 2026 09:23:27 -0700
+Subject: [PATCH] port the flashnext series onto the qwen4exp/mtp-fix lineage
+
+Re-ports, adapted to this lineage:
+- device-resident recurrent snapshots, extended to the separated PLE conv row
+  (p_l) and sized from the live tensors; K-slot rollback writes in
+  build_conv_state_at (fixes BOTH conv rows); QWEN4EXP on the rs-rollback
+  allowlist. Upstream's replay/no-reverify and distribution acceptance kept.
+- uniform draft length for co-batched multi-sequence verification, integrated
+  with adaptive drafting (uniform overrides per-sequence lengths when more
+  than one sequence drafts, or split_equal shreds the batch again).
+- QSA top-k gather, dispatched inside build_attn_qsa with the producer sizing
+  in build_qsa_top_k; helpers in llama-graph. Value-rotation unwind preserved.
+- GDN output-projection flatten and expand-late for qwen4exp (25748619d and
+  eb3d32a6c covered qwen35/qwen35moe/qwen3next but not this arch).
+Dropped as already present here: can_reuse, LDS stride pad, grouped MTP hnorm.
+
+Measured on the Q4 model, interleaved against the unpatched branch, PLE on
+disk in both arms:
+  PAR=1: 33.6 -> 50.6 tok/s (+50.6%), acceptance equal or better
+  PAR=4: 42.1 -> 83.4 tok/s (+98%)
+  65K needle with the gather active: 3/3, byte-identical answers
+  700-token correctness probe (rollback incl. the PLE row): ALL PASS
+---
+ common/common.cpp               |  41 ++++++-
+ common/common.h                 |  21 ++++
+ common/speculative.cpp          |  71 +++++++++++-
+ include/llama.h                 |   9 ++
+ src/llama-arch.cpp              |  14 +++
+ src/llama-context.cpp           |  73 ++++++++++++
+ src/llama-graph.cpp             | 160 ++++++++++++++++++++++++++
+ src/llama-graph.h               |  17 +++
+ src/llama-memory-recurrent.cpp  | 194 ++++++++++++++++++++++++++++++++
+ src/llama-memory-recurrent.h    |  28 +++++
+ src/models/qwen4exp.cpp         |  94 +++++++++++++---
+ tools/server/server-context.cpp |  45 +++++++-
+ 12 files changed, 744 insertions(+), 23 deletions(-)
+
+diff --git a/common/common.cpp b/common/common.cpp
+index d9e4858..a60b49d 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -2265,10 +2265,48 @@ size_t common_prompt_checkpoint::size() const {
+ }
+ 
+ bool common_prompt_checkpoint::empty() const {
+-    return data_tgt.empty();
++    return data_tgt.empty() && !dev_tgt;
++}
++
++void common_prompt_checkpoint::update_tgt_dev(
++        llama_context * ctx,
++        llama_seq_id seq_id,
++        llama_state_seq_flags flags) {
++    if (ctx == nullptr) {
++        return;
++    }
++
++    if (llama_state_seq_snapshot_save(ctx, seq_id)) {
++        dev_tgt = true;
++        data_tgt.clear();
++        data_tgt.shrink_to_fit();
++        return;
++    }
++
++    dev_tgt = false;
++    update_tgt(ctx, seq_id, flags);
++}
++
++void common_prompt_checkpoint::load_tgt_dev(
++        llama_context * ctx,
++        llama_seq_id seq_id,
++        llama_state_seq_flags flags) const {
++    if (ctx == nullptr) {
++        return;
++    }
++
++    if (dev_tgt) {
++        if (llama_state_seq_snapshot_load(ctx, seq_id)) {
++            return;
++        }
++        GGML_ABORT("device recurrent-state snapshot was taken but could not be restored\n");
++    }
++
++    load_tgt(ctx, seq_id, flags);
+ }
+ 
+ void common_prompt_checkpoint::clear() {
++    dev_tgt = false;
+     n_tokens = 0;
+ 
+     pos_min = 0;
+@@ -2361,6 +2399,7 @@ void common_prompt_checkpoint::load_dft(
+ }
+ 
+ void common_prompt_checkpoint::clear_tgt() {
++    dev_tgt = false;
+     data_tgt.clear();
+ }
+ 
+diff --git a/common/common.h b/common/common.h
+index 87b9059..cfde4ed 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -1152,6 +1152,7 @@ struct common_prompt_checkpoint {
+     llama_pos pos_max;
+ 
+     std::vector<uint8_t> data_tgt;
++    bool dev_tgt = false;   // data_tgt is empty because the state lives in a device snapshot
+     std::vector<uint8_t> data_dft;
+ 
+     // (optional) speculative-decoding implementation state stashed with the checkpoint
+@@ -1183,6 +1184,26 @@ struct common_prompt_checkpoint {
+             llama_seq_id seq_id,
+             llama_state_seq_flags flags) const;
+ 
++    // Device-resident variants, for the speculative rollback checkpoint only.
++    //
++    // The target's recurrent state is saved every speculative cycle and restored on every
++    // rejected token. Serialising it to host bytes means two ~125 MiB bus crossings per
++    // cycle; on a discrete GPU that measured 19.75 ms each. These keep the snapshot in
++    // the backend buffer instead, and fall back to the host path when the model has no
++    // recurrent state or the snapshot could not be allocated.
++    //
++    // NOT for the prompt cache: there is one snapshot slot per sequence, so only a single
++    // live checkpoint per slot can use it.
++    void update_tgt_dev(
++            llama_context * ctx,
++            llama_seq_id seq_id,
++            llama_state_seq_flags flags);
++
++    void load_tgt_dev(
++            llama_context * ctx,
++            llama_seq_id seq_id,
++            llama_state_seq_flags flags) const;
++
+     void load_dft(
+             llama_context * ctx,
+             llama_seq_id seq_id,
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index f587f75..bd9fece 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1,5 +1,7 @@
+ #include "speculative.h"
+ 
++#include <cstdlib>
++
+ #include "common.h"
+ #include "ggml.h"
+ #include "ggml-cpp.h"
+@@ -979,6 +981,49 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
+     }
+ };
+ 
++// Co-batched speculative verification.
++//
++// llama_batch_allocr::split_equal() advances every sequence in a ubatch in LOCKSTEP: it
++// stops expanding as soon as ANY sequence runs out of tokens, and then the n_keep_tail
++// filter (= n_rs_seq + 1) defers every sequence whose remaining count is nonzero but below
++// that, keeping only the prefix before the first such sequence. So a set of slots holding
++// UNEQUAL numbers of draft tokens gets torn apart into several ubatches -- very often one
++// sequence each -- and every one of them pays the target forward pass's fixed cost again.
++//
++// Measured on this box at PAR=4 (llama.cpp-fwd5, artifacts/flashnext/FWD_BISECT.md):
++//   target pass ~= 23.8 ms fixed + 7.47 ms/token
++//   without MTP  98.1% of target passes carried all 4 slots  -> 13.43 ms/token
++//   with MTP     85.2% carried exactly ONE slot              -> 13.95 ms/token
++//   4 slots x 4 tokens co-batched into one pass              ->  9.31 ms/token
++// which is why speculation measured as a LOSS at PAR=4 while its acceptance was 0.899 and
++// its per-token verification cost was falling normally. Nothing was slow; the batch was
++// being split.
++//
++// The fix is to keep every drafting sequence the same length, so split_equal can pack them
++// all into one pass. That means not letting p_min terminate one sequence early while its
++// peers keep going: a token below p_min is drafted anyway and will simply be rejected,
++// costing one token of marginal verification (7.47 ms, shared across the batch) instead of
++// an entire extra forward pass (23.8 ms fixed, paid alone).
++//
++// Only worth doing when there is something to co-batch with, so the default is automatic:
++// on when more than one sequence is drafting this cycle, off at PAR=1 where p_min is doing
++// useful work and there is no batch to pack. LLAMA_SPEC_UNIFORM=0/1 forces it either way.
++static bool spec_uniform_draft_len(int n_drafting) {
++    static const int v = [] {
++        const char * e = getenv("LLAMA_SPEC_UNIFORM");
++        return e ? atoi(e) : -1;   // -1 = auto
++    }();
++
++    if (v == 0) {
++        return false;
++    }
++    if (v > 0) {
++        return true;
++    }
++
++    return n_drafting > 1;
++}
++
+ // DFlash: block-diffusion drafting with a draft-side KV cache injection
+ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+     common_params_speculative_draft params;
+@@ -1718,6 +1763,12 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+             }
+         }
+ 
++        // decided once from this cycle's drafting set: every sequence must run to the same
++        // length or split_equal() tears the verification batch apart (see
++        // spec_uniform_draft_len). Uniform mode overrides the per-sequence adaptive length,
++        // which would otherwise reintroduce unequal drafts.
++        const bool uniform_len = spec_uniform_draft_len(n_drafting);
++
+         int i = 0;
+ 
+         while (n_drafting > 0) {
+@@ -1773,8 +1824,22 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+                 // add drafted token for each sequence
+                 const llama_token id = cur_p->data[0].id;
+ 
+-                // only collect very high-confidence draft tokens
+-                if (cur_p->data[0].p < params.p_min) {
++                // LLAMA_DRAFT_CONF=1: the draft head's top-1 probability at every draft
++                // step. Bimodal => the head is honestly uncertain and p_min is doing its
++                // job. Uniformly mediocre => the head is badly conditioned, which would
++                // point at the hidden-state handoff rather than at p_min.
++                if (getenv("LLAMA_DRAFT_CONF")) {
++                    printf("DRAFTCONF pos=%d p=%.6f p2=%.6f sofar=%d\n",
++                           i, cur_p->data[0].p,
++                           cur_p->size > 1 ? cur_p->data[1].p : 0.0f,
++                           (int) dparams.at(seq_id).result->size());
++                    fflush(stdout);
++                }
++
++                // only collect very high-confidence draft tokens -- unless this cycle is
++                // co-batching several sequences, where stopping one early costs the whole
++                // batch an extra target pass (see spec_uniform_draft_len)
++                if (cur_p->data[0].p < params.p_min && !uniform_len) {
+                     drafting[seq_id] = false;
+                     n_drafting--;
+ 
+@@ -1788,7 +1853,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+ 
+                 result.push_back(id);
+ 
+-                if (n_draft_eff <= (int) result.size()) {
++                if ((uniform_len ? params.n_max : n_draft_eff) <= (int) result.size()) {
+                     drafting[seq_id] = false;
+                     n_drafting--;
+                     continue;
+diff --git a/include/llama.h b/include/llama.h
+index 7ddea69..3096887 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -945,6 +945,15 @@ extern "C" {
+ // work only with partial states, such as SWA KV cache or recurrent cache (e.g. Mamba)
+ #define LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY 1
+ 
++    // Device-resident snapshot of a sequence's recurrent state, for speculative rollback.
++    // Same bytes as llama_state_seq_get/set_data under PARTIAL_ONLY, but kept in the
++    // backend buffer instead of host memory, so restoring never crosses the bus.
++    // Return false when the model has no recurrent state or the snapshot is unavailable;
++    // the caller must then fall back to the host path. [EXPERIMENTAL]
++    LLAMA_API bool llama_state_seq_snapshot_save (struct llama_context * ctx, llama_seq_id seq_id);
++    LLAMA_API bool llama_state_seq_snapshot_load (struct llama_context * ctx, llama_seq_id seq_id);
++    LLAMA_API bool llama_state_seq_snapshot_valid(struct llama_context * ctx, llama_seq_id seq_id);
++
+ // Keeps the tensor data on device buffers (i.e. not accessible in host memory, but faster save/load).
+ // Getting the state for a seq_id with this flag invalidates all prior states gotten for that seq_id with this flag.
+ #define LLAMA_STATE_SEQ_FLAGS_ON_DEVICE 2
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 4c074b4..d2d5638 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -1100,6 +1100,20 @@ bool llm_arch_is_diffusion(const llm_arch & arch) {
+ 
+ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
+     switch (arch) {
++        // Enabled 2026-08-27 once qwen4exp's build_conv_state_at learned to write the
++        // per-token rollback slots ([TAG_RECURRENT_ROLLBACK_SPLITS] in qwen4exp.cpp).
++        // Before that the GDN kernel wrote its snapshots (keep_rs_t) but the packed
++        // delta-net + PLE conv row only ever wrote slot 0, so any rollback read stale
++        // conv history. VALIDATE WITH 300+ TOKEN GENERATIONS -- short checks pass while
++        // the output is degenerate.
++        case LLM_ARCH_QWEN4EXP:
++        // Historical note. Bisected 2026-08-27: corrupt even at rollback DEPTH 1
++        // (SPEC_N=1 -> n_rs_seq=1), so this is not a depth interaction -- the rs_seq
++        // mechanism is incompatible with qwen4exp's state, and enabling it needs a real
++        // fix, not a config change. Adding it makes MTP ~44% faster and produces CORRUPT
++        // output: generation degenerates into repetition within a few hundred tokens.
++        // qwen4exp's DeltaNet state cannot be partially rewound, so its absence here is
++        // deliberate, not an oversight. Verified 2026-08-27 -- do not "fix" this.
+         case LLM_ARCH_QWEN35:
+         case LLM_ARCH_QWEN35MOE:
+         case LLM_ARCH_DEEPSEEK4:
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index d204f83..4a590b7 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -7,6 +7,8 @@
+ #include "llama-batch.h"
+ #include "llama-io.h"
+ #include "llama-memory.h"
++#include "llama-memory-hybrid.h"
++#include "llama-memory-recurrent.h"
+ #include "llama-mmap.h"
+ #include "llama-model.h"
+ #include "llama-ext.h"
+@@ -1359,6 +1361,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
+     const auto gparams = graph_params(res, ubatch, mctx, gtype);
+ 
++    const bool gr_log = getenv("LLAMA_UBATCH_LOG") != nullptr;
++    const int64_t gr_t0 = gr_log ? ggml_time_us() : 0;
++    bool gr_reused = true;
++
+     if (!graph_reuse_disable && res->can_reuse(gparams)) {
+         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
+ 
+@@ -1378,6 +1384,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+ 
+         //const auto t_start_us = ggml_time_us();
+ 
++        gr_reused = false;
+         gf = model.build_graph(gparams);
+ 
+         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+@@ -1405,6 +1412,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+     }
+ 
++    if (gr_log) {
++        // A rebuild here means the cached graph did not match this ubatch's shape.
++        // Speculation alternates draft-1 / target-k shapes every cycle, so it can thrash
++        // this cache where plain decode (always n_tokens=1) never does.
++        LLAMA_LOG_INFO("GRAPH %s n_tokens=%u  setup %.2f ms\n",
++                       gr_reused ? "reuse  " : "REBUILD",
++                       ubatch.n_tokens, (ggml_time_us() - gr_t0)/1000.0);
++    }
++
+     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
+@@ -1656,6 +1672,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+ }
+ 
+ int llama_context::decode(const llama_batch & batch_inp) {
++    const int64_t dec_t0 = ggml_time_us();
+     // MTP hook batches carry both token (next-token id) and embd (h_nextn row),
+     // so accept either present rather than requiring exactly one.
+     GGML_ASSERT(batch_inp.token || batch_inp.embd);
+@@ -1812,6 +1829,15 @@ int llama_context::decode(const llama_batch & batch_inp) {
+         llama_sampler_backend_begin(entry.second);
+     }
+ 
++    if (getenv("LLAMA_UBATCH_LOG")) {
++        // Everything from entry to the first forward pass: batch alloc, memory
++        // init_batch (slot search / recurrent state), output_reserve. Speculation
++        // changes n_tokens and n_outputs every cycle, so any per-shape work here is
++        // paid once per cycle where plain decode pays it once, ever.
++        LLAMA_LOG_INFO("DECODE-PROLOGUE %.2f ms  n_tokens_all=%d n_outputs_all=%d\n",
++                       (ggml_time_us() - dec_t0)/1000.0, (int) n_tokens_all, (int) n_outputs_all);
++    }
++
+     int64_t n_outputs_prev = 0;
+     int64_t n_tokens_prev  = 0;
+ 
+@@ -1836,8 +1862,21 @@ int llama_context::decode(const llama_batch & batch_inp) {
+ 
+         ggml_status status;
+ 
++        // LLAMA_UBATCH_LOG=1: wall time of one forward pass against the ubatch shape.
++        // A k-token verification of ONE sequence should cost fixed + k*marginal; if it
++        // instead costs k * (a whole 1-token pass), the batching is not buying anything.
++        const bool ub_log = getenv("LLAMA_UBATCH_LOG") != nullptr;
++        int64_t ub_t0 = ub_log ? ggml_time_us() : 0;
++
+         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
+ 
++        if (ub_log) {
++            synchronize();
++            LLAMA_LOG_INFO("UBATCH n_tokens=%u n_seqs=%u n_seq_tokens=%u  %.2f ms\n",
++                           ubatch.n_tokens, ubatch.n_seqs, ubatch.n_seq_tokens,
++                           (ggml_time_us() - ub_t0) / 1000.0);
++        }
++
+         if (!res) {
+             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
+             llama_pos pos_min[LLAMA_MAX_SEQ];
+@@ -2328,6 +2367,11 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+         (model.arch == LLM_ARCH_DFLASH && model.hparams.dsv4_hc_mult > 0) ||
+         model.arch == LLM_ARCH_NANBEIGE ||
+         model.arch == LLM_ARCH_MINIMAX_01 ||
++        // qwen4exp is the same shape of graph: gated DeltaNet with recurrent
++        // state on 36 layers, QSA plus a separate indexer on 12, hyper-
++        // connections throughout and a 512-expert MoE per layer. The generic
++        // 8*n_tensors budget (9792 nodes) holds at one slot and runs out at four.
++        model.arch == LLM_ARCH_QWEN4EXP ||
+         model.arch == LLM_ARCH_MINIMAX_M3) {
+         res = std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
+     } else {
+@@ -4109,6 +4153,35 @@ size_t llama_state_seq_get_size_ext(llama_context * ctx, llama_seq_id seq_id, ll
+     return ctx->state_seq_get_size(seq_id, flags);
+ }
+ 
++// Resolve the recurrent memory behind a context, if it has one. qwen4exp and the other
++// gated-delta archs use llama_memory_hybrid (attention KV + recurrent); pure recurrent
++// models expose it directly.
++static llama_memory_recurrent * llama_get_mem_recr(llama_context * ctx) {
++    llama_memory_i * mem = ctx->get_memory();
++    if (!mem) {
++        return nullptr;
++    }
++    if (auto * hyb = dynamic_cast<llama_memory_hybrid *>(mem)) {
++        return hyb->get_mem_recr();
++    }
++    return dynamic_cast<llama_memory_recurrent *>(mem);
++}
++
++bool llama_state_seq_snapshot_save(llama_context * ctx, llama_seq_id seq_id) {
++    auto * recr = llama_get_mem_recr(ctx);
++    return recr ? recr->snapshot_save(seq_id) : false;
++}
++
++bool llama_state_seq_snapshot_load(llama_context * ctx, llama_seq_id seq_id) {
++    auto * recr = llama_get_mem_recr(ctx);
++    return recr ? recr->snapshot_load(seq_id) : false;
++}
++
++bool llama_state_seq_snapshot_valid(llama_context * ctx, llama_seq_id seq_id) {
++    auto * recr = llama_get_mem_recr(ctx);
++    return recr ? recr->snapshot_valid(seq_id) : false;
++}
++
+ size_t llama_state_seq_get_data_ext(llama_context * ctx, uint8_t * dst, size_t size, llama_seq_id seq_id, llama_state_seq_flags flags) {
+     ctx->synchronize();
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 8fca8e1..0249660 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-graph.h"
++#include <cstdlib>
+ 
+ #include "llama-impl.h"
+ #include "llama-model.h"
+@@ -2538,6 +2539,165 @@ ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_t
+     return pos_bias;
+ }
+ 
++// Decides whether the top-k attention may gather the selected rows instead of masking all
++// n_kv cells, and at what padded width. Returns 0 to keep the dense path.
++//
++// The producer of top_k and the consumer in build_attn must agree, so both call this.
++//
++// LLAMA_QSA_GATHER=0 disables; an integer sets the minimum n_kv it activates at
++// (default 16384 -- short contexts keep the dense path, where it is already cheap).
++int64_t llm_graph_context::attn_top_k_gather_n_sel(int64_t n_kv, int64_t width) const {
++    //
++    // The default threshold is MEASURED, not guessed. Warm decode, same request sequence,
++    // gather vs no gather (`logs/depth_curve.out`, 2026-08-28):
++    //     16K   48.3 -> 45.5 tok/s   -5.8%   the gather COSTS here
++    //     64K   31.6 -> 31.7          +0.3%   a wash
++    //    128K   23.4 -> 25.5          +8.7%   the gather pays
++    // The gather removes the O(n_kv) attention but not the O(n_kv) indexer scan that
++    // produces the top-k, so the saving only overtakes the gather's own cost once the
++    // cache is much larger than the ~2051-cell selection. 16384 sat exactly where it
++    // loses.
++    static const int64_t min_kv = [] {
++        const char * env = getenv("LLAMA_QSA_GATHER");
++        if (env == nullptr) {
++            return (int64_t) 65536;
++        }
++        const int64_t v = atoll(env);
++        return v <= 0 ? INT64_MAX : v;
++    }();
++
++    // the gather relies on flash attention: a non-transposed V cache and an f16 mask.
++    // alibi encodes distances in the mask, and only the dense path is exercised with it.
++    if (!cparams.flash_attn || hparams.use_alibi) {
++        return 0;
++    }
++
++    // decode-sized batches only: a prefill ubatch amortises the dense pass over many
++    // queries, while the gather cost scales with n_tokens (each gathers its own rows)
++    if (n_tokens > 16 || n_kv < min_kv || width <= 0) {
++        return 0;
++    }
++
++    // The selection is used at exactly `width`. Padding it to the flash-attention KV
++    // granularity of 256 -- widening the top-k and masking the surplus back out -- is
++    // WRONG and is off by default.
++    //
++    // Measured 2026-08-28, one binary, needle retrieval at 65K (`logs/rca_gather3.out`):
++    //   dense (gather off)      3/3, 3/3 needles
++    //   gather, padded          2/3, 2/3   <-- loses a needle, reproducibly
++    //   gather, width exactly   3/3, 3/3
++    //   gather, padded, MTP off 2/3, 2/3   <-- so it is not the speculative batch
++    // The padded path was also SLOWER (38.1/42.3 vs 39.3/46.8 tok/s), so its only
++    // justification -- kernel efficiency -- did not materialise either.
++    //
++    // The mechanism inside the padded path is NOT yet isolated: the re-masking looks
++    // correct on inspection, and the failure survives with n_tokens = 1, which rules out
++    // the strided per-token index view. Do not re-enable it on the theory that the
++    // re-masking is fine. LLAMA_QSA_GATHER_PAD=1 restores it for further investigation.
++    static const bool pad = getenv("LLAMA_QSA_GATHER_PAD") != nullptr;
++    const int64_t n_sel = pad ? GGML_PAD(width, 256) : width;
++
++    // nothing to gain unless the gather actually shrinks the attended range
++    if (n_sel >= n_kv) {
++        return 0;
++    }
++
++    return n_sel;
++}
++
++// Attend over exactly the cells top_k names, by gathering their K/V rows out of the cache,
++// rather than masking all n_kv cells. Each token attends to its own selection, so tokens ride
++// in ne3 with one query per slice.
++//   k, v      [d, n_head_kv, n_kv, n_stream] cache views
++//   kq_mask   F16 [n_kv, n_tokens/n_stream, 1, n_stream]
++//   q_cur     F32 [d_k, n_head, n_tokens]
++//   top_k     I32 [n_sel, n_tokens/n_stream, 1, n_stream]
++ggml_tensor * llm_graph_context::build_attn_top_k_gather(
++        ggml_tensor * kq_mask,
++        ggml_tensor * k,
++        ggml_tensor * v,
++        ggml_tensor * q_cur,
++        ggml_tensor * top_k,
++            int64_t   width,
++              float   kq_scale,
++                int   il) const {
++    const int64_t d_k  = k->ne[0];
++    const int64_t d_v  = v->ne[0];
++    const int64_t hkv  = k->ne[1];
++    const int64_t n_kv = k->ne[2];
++    const int64_t ns   = k->ne[3];
++
++    const int64_t n_sel = top_k->ne[0];
++    const int64_t n_tps = top_k->ne[1];
++    const int64_t nt    = n_tps*ns;
++
++    GGML_ASSERT(top_k->ne[3] == ns);
++    GGML_ASSERT(nt == q_cur->ne[2]);
++    GGML_ASSERT(width > 0 && width <= n_sel && n_sel <= n_kv);
++    GGML_ASSERT(kq_mask->type == GGML_TYPE_F16);
++    GGML_ASSERT(ggml_is_contiguous(top_k));
++    GGML_ASSERT(ggml_is_contiguous(q_cur));
++
++    // every stream's indices in one flat list; get_rows picks stream s's cells for row list s
++    ggml_tensor * idx = ggml_view_2d(ctx0, top_k, n_sel*n_tps, ns, top_k->nb[3], 0);
++
++    // a cell is one contiguous row of d*hkv values in the cache, so fold the head dim away
++    ggml_tensor * k_rows = ggml_view_3d(ctx0, k, d_k*hkv, n_kv, ns, k->nb[2], k->nb[3], 0);
++    ggml_tensor * v_rows = ggml_view_3d(ctx0, v, d_v*hkv, n_kv, ns, v->nb[2], v->nb[3], 0);
++
++    // note: get_rows always returns F32; a fused quant->F16 gather would halve this intermediate
++    ggml_tensor * k_sel = ggml_cast(ctx0, ggml_get_rows(ctx0, k_rows, idx), GGML_TYPE_F16);
++    ggml_tensor * v_sel = ggml_cast(ctx0, ggml_get_rows(ctx0, v_rows, idx), GGML_TYPE_F16);
++    cb(k_sel, "qsa_k_sel", il);
++    cb(v_sel, "qsa_v_sel", il);
++
++    // [d*hkv, n_sel*n_tps, ns] -> [d, n_sel, hkv, nt]: token t of stream s is ne3 slice
++    // s*n_tps + t, the same order the ubatch lays its tokens out in
++    ggml_tensor * k_g = ggml_view_4d(ctx0, k_sel, d_k, n_sel, hkv, nt,
++            ggml_row_size(k_sel->type, d_k*hkv),
++            ggml_row_size(k_sel->type, d_k),
++            ggml_row_size(k_sel->type, d_k*hkv*n_sel), 0);
++    ggml_tensor * v_g = ggml_view_4d(ctx0, v_sel, d_v, n_sel, hkv, nt,
++            ggml_row_size(v_sel->type, d_v*hkv),
++            ggml_row_size(v_sel->type, d_v),
++            ggml_row_size(v_sel->type, d_v*hkv*n_sel), 0);
++
++    // per-row visibility: gather each selected cell's original mask value (rows of size 1).
++    // Only the first `width` entries carry the real selection.
++    ggml_tensor * m_sel = ggml_get_rows(ctx0,
++            ggml_reshape_4d(ctx0, kq_mask, 1, n_kv, n_tps, ns),
++            ggml_view_3d(ctx0, top_k, width, n_tps, ns, top_k->nb[1], top_k->nb[3], 0));
++
++    // entries past `width` exist only to pad n_sel to the flash-attention KV granularity;
++    // mask them back out so the visible set is exactly the dense path's selection
++    if (width < n_sel) {
++        ggml_tensor * m_pad = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, n_sel - width, n_tps, ns);
++        m_pad = ggml_fill(ctx0, m_pad, -INFINITY);
++        m_sel = ggml_concat(ctx0, m_sel, m_pad, 1);
++    }
++
++    ggml_tensor * m = ggml_cast(ctx0, m_sel, GGML_TYPE_F16);
++    m = ggml_reshape_4d(ctx0, m, n_sel, 1, 1, nt);
++    cb(m, "qsa_kq_mask_sel", il);
++
++    // one query per ne3 slice against that token's own n_sel rows
++    ggml_tensor * q = ggml_reshape_4d(ctx0, q_cur, d_k, 1, q_cur->ne[1], nt);
++
++    ggml_tensor * cur = ggml_flash_attn_ext(ctx0, q, k_g, v_g, m, kq_scale,
++            hparams.f_max_alibi_bias,
++            hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
++    res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, cur, il});
++
++    ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
++
++    // [d_v, n_head, 1, nt] -> [d_v*n_head, n_tokens], token order unchanged
++    cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
++
++    ggml_build_forward_expand(gf, cur);
++
++    return cur;
++}
++
+ ggml_tensor * llm_graph_context::build_attn_mha(
+          ggml_tensor * q,
+          ggml_tensor * k,
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 3edd29d..1c5a556 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -1163,6 +1163,23 @@ struct llm_graph_context {
+     // attention
+     //
+ 
++    // Padded top-k width when the gather path applies to this ubatch, otherwise 0.
++    // Shared so the top_k producer and the attention consumer take the SAME decision:
++    // the selection has to be sized for the gather before attention sees it.
++    int64_t attn_top_k_gather_n_sel(int64_t n_kv, int64_t width) const;
++
++    // decode fast path for top-k attention: gather the selected K/V rows instead of
++    // masking all n_kv cells. See the implementation for the activation conditions.
++    ggml_tensor * build_attn_top_k_gather(
++            ggml_tensor * kq_mask,
++            ggml_tensor * k,
++            ggml_tensor * v,
++            ggml_tensor * q_cur,
++            ggml_tensor * top_k,
++                int64_t   width,
++                  float   kq_scale,
++                    int   il) const;
++
+     ggml_tensor * build_attn_mha(
+             ggml_tensor * q,       // [n_embd_head_q, n_head_q, n_tokens]
+             ggml_tensor * k,       // [n_embd_head_k, n_head_k, n_tokens]
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 57919ac..2876bd5 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -138,6 +138,200 @@ llama_memory_recurrent::llama_memory_recurrent(
+     }
+ }
+ 
++// ---- device-resident snapshot -------------------------------------------------------
++//
++// Rolling back a rejected speculative draft means restoring the recurrent state, and a
++// recurrent state is a fold: there is no inverse, only a copy taken beforehand. The
++// generic path serialises it to host bytes, so on a discrete GPU every rejection is a
++// full PCIe round trip -- measured here at 124.88 MiB / 6.6 GB/s = 19.75 ms, once per
++// speculative cycle, 27% of decode time. The snapshot below lives in the same backend
++// buffer as the state itself, so the same copy is device-to-device at 894 GB/s: 0.29 ms.
++//
++// One cell per sequence. Column `cells[seq_id].tail` of the live tensor is copied to
++// column `seq_id` of the snapshot, so sequences are independent and PAR > 1 is safe.
++
++// a one-column view of an already-allocated tensor, valid for ggml_backend_tensor_copy
++static ggml_tensor llm_rs_col(ggml_tensor * t, int64_t col) {
++    ggml_tensor v = *t;
++    v.ne[1] = 1; v.ne[2] = 1; v.ne[3] = 1;
++    v.nb[2] = v.nb[1];
++    v.nb[3] = v.nb[1];
++    v.op = GGML_OP_NONE;
++    for (int i = 0; i < GGML_MAX_SRC; ++i) {
++        v.src[i] = nullptr;
++    }
++    v.view_src  = t->view_src ? t->view_src : t;
++    v.view_offs = (size_t) col * t->nb[1];
++    v.data      = (char *) t->data + (size_t) col * t->nb[1];
++    return v;
++}
++
++bool llama_memory_recurrent::snapshot_init() {
++    if (!snap_r_l.empty()) {
++        return true;
++    }
++    if (snap_failed) {
++        return false;
++    }
++
++    const int32_t n_layer = (int32_t) r_l.size();
++
++    std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map;
++    std::vector<ggml_context_ptr> ctxs;
++
++    snap_r_l.assign(n_layer, nullptr);
++    snap_s_l.assign(n_layer, nullptr);
++    snap_p_l.assign(n_layer, nullptr);
++
++    for (int32_t il = 0; il < n_layer; ++il) {
++        if (!r_l[il] || !s_l[il]) {
++            continue;
++        }
++
++        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(r_l[il]->buffer);
++
++        auto it = ctx_map.find(buft);
++        if (it == ctx_map.end()) {
++            ggml_init_params params = {
++                /*.mem_size   =*/ size_t(2*n_layer*ggml_tensor_overhead()),
++                /*.mem_buffer =*/ NULL,
++                /*.no_alloc   =*/ true,
++            };
++            ggml_context * ctx = ggml_init(params);
++            if (!ctx) {
++                snap_failed = true;
++                snap_r_l.clear(); snap_s_l.clear();
++                return false;
++            }
++            ctxs.emplace_back(ctx);
++            ctx_map.emplace(buft, ctx);
++            it = ctx_map.find(buft);
++        }
++
++        // sized from the live tensors, not hparams: on this lineage the PLE conv history has
++        // its own row (p_l) whose width is per-layer, and r rows can differ per layer too
++        snap_r_l[il] = ggml_new_tensor_2d(it->second, r_l[il]->type, r_l[il]->ne[0], n_seq_max);
++        snap_s_l[il] = ggml_new_tensor_2d(it->second, s_l[il]->type, s_l[il]->ne[0], n_seq_max);
++        ggml_format_name(snap_r_l[il], "snap_r_l%d", il);
++        ggml_format_name(snap_s_l[il], "snap_s_l%d", il);
++        if (il < (int32_t) p_l.size() && p_l[il]) {
++            snap_p_l[il] = ggml_new_tensor_2d(it->second, p_l[il]->type, p_l[il]->ne[0], n_seq_max);
++            ggml_format_name(snap_p_l[il], "snap_p_l%d", il);
++        }
++    }
++
++    size_t total = 0;
++    for (auto & [buft, ctx] : ctx_map) {
++        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
++        if (!buf) {
++            LLAMA_LOG_WARN("%s: failed to allocate the recurrent-state snapshot; "
++                           "speculative rollback will fall back to the host path\n", __func__);
++            snap_failed = true;
++            snap_r_l.clear(); snap_s_l.clear();
++            return false;
++        }
++        ggml_backend_buffer_clear(buf, 0);
++        total += ggml_backend_buffer_get_size(buf);
++        // hand the context over to the same owner as the buffer
++        for (auto & c : ctxs) {
++            if (c.get() == ctx) {
++                snap_ctxs_bufs.emplace_back(std::move(c), buf);
++                break;
++            }
++        }
++    }
++
++    snap_ok.assign(n_seq_max, 0);
++    snap_pos.assign(n_seq_max, -1);
++    snap_tail.assign(n_seq_max, -1);
++
++    LLAMA_LOG_INFO("%s: recurrent-state snapshot = %7.2f MiB (%u seqs, device-resident: "
++                   "speculative rollback stays off the bus)\n",
++                   __func__, total/1024.0/1024.0, n_seq_max);
++    return true;
++}
++
++bool llama_memory_recurrent::snapshot_save(llama_seq_id seq_id) {
++    if (seq_id < 0 || (uint32_t) seq_id >= n_seq_max) {
++        return false;
++    }
++    if (!snapshot_init()) {
++        return false;
++    }
++
++    const int32_t tail = cells[seq_id].tail;
++    if (tail < 0) {
++        return false;
++    }
++
++    for (size_t il = 0; il < r_l.size(); ++il) {
++        if (!r_l[il] || !snap_r_l[il]) {
++            continue;
++        }
++        ggml_tensor src_r = llm_rs_col(r_l[il],      tail);
++        ggml_tensor dst_r = llm_rs_col(snap_r_l[il], seq_id);
++        ggml_tensor src_s = llm_rs_col(s_l[il],      tail);
++        ggml_tensor dst_s = llm_rs_col(snap_s_l[il], seq_id);
++        ggml_backend_tensor_copy(&src_r, &dst_r);
++        ggml_backend_tensor_copy(&src_s, &dst_s);
++        if (il < p_l.size() && p_l[il] && snap_p_l[il]) {
++            ggml_tensor src_p = llm_rs_col(p_l[il],      tail);
++            ggml_tensor dst_p = llm_rs_col(snap_p_l[il], seq_id);
++            ggml_backend_tensor_copy(&src_p, &dst_p);
++        }
++    }
++
++    snap_pos [seq_id] = cells[tail].pos;
++    snap_tail[seq_id] = tail;
++    snap_ok  [seq_id] = 1;
++    return true;
++}
++
++bool llama_memory_recurrent::snapshot_load(llama_seq_id seq_id) {
++    if (!snapshot_valid(seq_id)) {
++        return false;
++    }
++
++    const int32_t tail = cells[seq_id].tail;
++    if (tail < 0) {
++        return false;
++    }
++
++    // The snapshot restores in place, so it is only valid if the sequence still occupies
++    // the cell it did at save time. If it moved, the caller must use the host path, which
++    // rebuilds the cells from scratch.
++    if (tail != snap_tail[seq_id]) {
++        return false;
++    }
++
++    for (size_t il = 0; il < r_l.size(); ++il) {
++        if (!r_l[il] || !snap_r_l[il]) {
++            continue;
++        }
++        ggml_tensor src_r = llm_rs_col(snap_r_l[il], seq_id);
++        ggml_tensor dst_r = llm_rs_col(r_l[il],      tail);
++        ggml_tensor src_s = llm_rs_col(snap_s_l[il], seq_id);
++        ggml_tensor dst_s = llm_rs_col(s_l[il],      tail);
++        ggml_backend_tensor_copy(&src_r, &dst_r);
++        ggml_backend_tensor_copy(&src_s, &dst_s);
++        if (il < p_l.size() && p_l[il] && snap_p_l[il]) {
++            ggml_tensor src_p = llm_rs_col(snap_p_l[il], seq_id);
++            ggml_tensor dst_p = llm_rs_col(p_l[il],      tail);
++            ggml_backend_tensor_copy(&src_p, &dst_p);
++        }
++    }
++
++    // rewind the bookkeeping too, or seq_rm() below will see a partial intersection
++    cells[tail].pos = snap_pos[seq_id];
++
++    return true;
++}
++
++bool llama_memory_recurrent::snapshot_valid(llama_seq_id seq_id) const {
++    return seq_id >= 0 && (uint32_t) seq_id < n_seq_max
++        && !snap_r_l.empty() && seq_id < (llama_seq_id) snap_ok.size() && snap_ok[seq_id];
++}
++
+ void llama_memory_recurrent::clear(bool data) {
+     for (int32_t i = 0; i < (int32_t) size; ++i) {
+         cells[i].pos = -1;
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+index 4abb3f5..1343519 100644
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -56,6 +56,19 @@ class llama_memory_recurrent : public llama_memory_i {
+ 
+     bool prepare(const std::vector<llama_ubatch> & ubatches);
+ 
++    // Device-resident snapshot of one sequence's recurrent state.
++    //
++    // The speculative decoder must restore this state whenever a drafted token is
++    // rejected, because a recurrent state is a fold and cannot be un-applied. The generic
++    // path (llama_state_seq_get/set_data) serialises it to host bytes, which on a
++    // discrete GPU means a full round trip over PCIe: measured 124.88 MiB at 6.6 GB/s =
++    // 19.75 ms, once per speculative cycle. Both endpoints already live in the same
++    // backend buffer, so copying tensor->tensor there instead costs 0.29 ms.
++    // Returns false if the snapshot could not be taken; the caller must then fall back.
++    bool snapshot_save(llama_seq_id seq_id);
++    bool snapshot_load(llama_seq_id seq_id);
++    bool snapshot_valid(llama_seq_id seq_id) const;
++
+     // find a contiguous slot of memory cells and emplace the ubatch there
+     bool find_slot(const llama_ubatch & ubatch);
+ 
+@@ -114,6 +127,21 @@ class llama_memory_recurrent : public llama_memory_i {
+     // a second conv history that must stay replicated across devices, so it cannot share the r row
+     std::vector<ggml_tensor *> p_l;
+ 
++    // device-side snapshot, allocated lazily on first save: one cell per sequence
++    bool snapshot_init();
++    std::vector<ggml_tensor *> snap_r_l;
++    std::vector<ggml_tensor *> snap_s_l;
++    std::vector<ggml_tensor *> snap_p_l;   // PLE conv history (own row on this lineage)
++    std::vector<char>          snap_ok;    // per seq_id: a snapshot has been taken
++    // The state tensors are only half of it: seq_rm() reasons about cells[tail].pos, so a
++    // snapshot that restores the data but not the position leaves the memory internally
++    // inconsistent and the next rollback fails. The host path gets this for free because
++    // state_read_meta() rewrites the cells; here it has to be carried explicitly.
++    std::vector<llama_pos>     snap_pos;
++    std::vector<int32_t>       snap_tail;
++    bool                       snap_failed = false;
++    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> snap_ctxs_bufs;
++
+ private:
+     //const llama_model & model;
+     const llama_hparams & hparams;
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index 6fc5f94..d7a387a 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include <algorithm>
+ #include <cinttypes>
++#include <cstdlib>
+ 
+ void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,        hparams.n_ff_exp, false);
+@@ -474,11 +475,21 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+                 model.layers[il].hc_attn_inject,
+                 &inject, il);
+ 
+-        ggml_build_forward_expand(gf, cur);
+-
++        // build_layer_attn_linear() adds the GDN state-cache writes as sink nodes with no
++        // consumers; closing the branch before they exist orders them against the wrong node
++        // set (upstream #22661: intermittent Vulkan corruption on the qwen35 family). Expand
++        // after the recurrent layer instead. LLAMA_GDN_EXPAND_EARLY=1 restores.
++        static const bool gdn_expand_early = getenv("LLAMA_GDN_EXPAND_EARLY") != nullptr;
+         if (hparams.is_recr(il)) {
++            if (gdn_expand_early) {
++                ggml_build_forward_expand(gf, cur);
++            }
+             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
++            if (!gdn_expand_early) {
++                ggml_build_forward_expand(gf, cur);
++            }
+         } else {
++            ggml_build_forward_expand(gf, cur);
+             cur = build_layer_attn(inp->get_attn(), mctx_hyb, cur, inp_pos, sections, il);
+         }
+ 
+@@ -858,10 +869,17 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
+     // the reference returns indexer_top_k + compress_ratio - 1: whole blocks plus the tail
+     const int64_t width = std::min<int64_t>(n_kv, (int64_t) hparams.indexer_top_k + r - 1);
+ 
+-    ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, expanded, width));
++    // If build_attn_qsa will take the gather path, the selection has to be sized for it
++    // here: attn_top_k_gather_n_sel() is the single decision point shared with the consumer.
++    const int64_t n_sel = std::max<int64_t>(width, attn_top_k_gather_n_sel(n_kv, width));
++
++    ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, expanded, n_sel));
+ 
+     // build_attn_qsa reads [n_top_k, n_batch, 1, n_stream], matching the KQ mask.
+-    top_k = ggml_reshape_4d(ctx0, top_k, width, n_tps, 1, n_stream);
++    top_k = ggml_reshape_4d(ctx0, top_k, n_sel, n_tps, 1, n_stream);
++    if (n_sel > width) {
++        top_k->op_params[0] = (int32_t) width;
++    }
+     cb(top_k, "indexer_top_k", il);
+ 
+     return top_k;
+@@ -938,6 +956,24 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
+     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
+     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+ 
++    // Decode fast path: gather the selected K/V rows and attend over exactly those instead of
++    // masking all n_kv cells -- per-token attention drops from O(n_kv) to O(n_sel). The
++    // producer sized top_k for this via attn_top_k_gather_n_sel (op_params[0] carries the
++    // unpadded width). The value-side rotation is undone after either path identically.
++    {
++        const int64_t n_sel_qsa = top_k->ne[0];
++        const int64_t width_qsa = top_k->op_params[0] > 0 ? (int64_t) top_k->op_params[0] : n_sel_qsa;
++        if (v->nb[1] <= v->nb[2] &&
++            attn_top_k_gather_n_sel(k->ne[2], width_qsa) == n_sel_qsa) {
++            ggml_tensor * gcur = build_attn_top_k_gather(kq_mask, k, v, q, top_k, width_qsa, kq_scale, il);
++            cb(gcur, "kqv_out", il);
++            if (inp->self_v_rot) {
++                gcur = llama_mul_mat_hadamard(ctx0, gcur, inp->self_v_rot);
++            }
++            return gcur;
++        }
++    }
++
+     ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, kq_mask_top_k, nullptr, nullptr, kq_scale, il);
+     cb(cur, "kqv_out", il);
+ 
+@@ -1151,6 +1187,19 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
+     // gated normalization, as self.norm(core_attn_out, z) in the reference
+     ggml_tensor * attn_out_norm = build_norm_gated(output, model.layers[il].ssm_norm, z_2d, il);
+ 
++    // Flatten to [D, n_seq_tokens * n_seqs] BEFORE the output projection: with a batch axis
++    // in ne2 the backends dispatch n_seqs independent mat-vecs over the same weight; flattened
++    // it is one batch-wide GEMM. No-op at n_seqs == 1. (LaurentZuijdwijk 25748619d applied
++    // this to qwen35/qwen35moe/qwen3next but not qwen4exp.) LLAMA_GDN_FLATTEN=0 restores.
++    static const bool gdn_flatten = [] { const char * e = getenv("LLAMA_GDN_FLATTEN"); return e == nullptr || atoi(e) != 0; }();
++    if (gdn_flatten) {
++        ggml_tensor * flat = ggml_reshape_2d(ctx0, attn_out_norm, head_v_dim * num_v_heads, n_seq_tokens * n_seqs);
++        cb(flat, "final_output", il);
++        cur = build_lora_mm(model.layers[il].ssm_out, flat, model.layers[il].ssm_out_s);
++        cb(cur, "linear_attn_out", il);
++        return cur;
++    }
++
+     ggml_tensor * final_output = ggml_reshape_3d(ctx0, attn_out_norm, head_v_dim * num_v_heads, n_seq_tokens, n_seqs);
+     cb(final_output, "final_output", il);
+ 
+@@ -1364,17 +1413,32 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
+     // keep the last state_cols columns for the next ubatch
+     const size_t row_size = ggml_row_size(conv_states_all->type, row_total);
+ 
+-    ggml_tensor * tail = ggml_view_3d(ctx0, conv_input,
+-            state_cols, channels, n_seqs,
+-            conv_input->nb[1], conv_input->nb[2],
+-            ggml_row_size(conv_input->type, conv_input->ne[0] - state_cols));
+-
+-    ggml_tensor * dst = ggml_view_2d(ctx0, conv_states_all,
+-            state_cols * channels, n_seqs,
+-            conv_states_all->nb[1],
+-            kv_head * row_size);
+-
+-    ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_cont(ctx0, tail), dst));
++    // [TAG_RECURRENT_ROLLBACK_SPLITS]
++    // With n_rs_seq > 0 the speculative decoder can be asked to rewind up to n_rs_seq
++    // tokens, so the state after EACH of the trailing K tokens has to be kept, not just
++    // the final one. This function writes both the delta-net conv history (r) and the PLE
++    // conv history (p), each in its own row on this lineage, so the loop fixes both.
++    // Relies on the last (n_rs_seq + 1) tokens of a sequence sharing one ubatch, which
++    // split_equal() guarantees through its n_keep_tail argument.
++    const int64_t mem_size = mctx_cur->get_size();
++    const int64_t K = (cparams.n_rs_seq == 0) ? 1 : (int64_t) cparams.n_rs_seq + 1;
++
++    for (int64_t t = 1; t <= K; ++t) {
++        const int64_t s_idx  = std::max<int64_t>(0, conv_input->ne[0] - state_cols - K + t);
++        const int64_t s_slot = K - t;
++
++        ggml_tensor * tail = ggml_view_3d(ctx0, conv_input,
++                state_cols, channels, n_seqs,
++                conv_input->nb[1], conv_input->nb[2],
++                ggml_row_size(conv_input->type, s_idx));
++
++        ggml_tensor * dst = ggml_view_2d(ctx0, conv_states_all,
++                state_cols * channels, n_seqs,
++                conv_states_all->nb[1],
++                (s_slot * mem_size + kv_head) * row_size);
++
++        ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_cont(ctx0, tail), dst));
++    }
+ 
+     return conv_input;
+ }
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a91a103..3790d62 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -191,6 +191,25 @@ struct server_batch {
+     }
+ };
+ 
++// LLAMA_SPEC_PROF=1: raw timestamped events, one per step. Cycles are reconstructed
++// offline (a cycle is the span between consecutive `acc` events), so the analysis does not
++// depend on where control flow happens to return -- which is what invalidated the previous
++// accumulator-based version when the rollback path changed.
++struct spec_prof {
++    static bool on() {
++        static const bool v = getenv("LLAMA_SPEC_PROF") != nullptr;
++        return v;
++    }
++    static int64_t now() { return ggml_time_us(); }
++    static void ev(const char * what, int a, int b, int64_t t0) {
++        if (!on()) return;
++        const int64_t t1 = now();
++        printf("SPECEV %s a=%d b=%d t0=%lld dur=%lld\n", what, a, b,
++               (long long) t0, (long long) (t1 - t0));
++        fflush(stdout);
++    }
++};
++
+ struct server_slot {
+     int id;
+ 
+@@ -2932,7 +2951,9 @@ struct server_context_impl {
+         // generate the actual drafts (if any)
+         if (!drafting.empty()) {
+             queue_tasks.yield_to_queue([&]() {
+-                common_speculative_draft(spec.get());
++                { const int64_t t0 = spec_prof::now();
++                  common_speculative_draft(spec.get());
++                  spec_prof::ev("gen", 0, 0, t0); }
+             });
+         }
+ 
+@@ -2967,7 +2988,11 @@ struct server_context_impl {
+                 if (use_ckpt_tgt) {
+                     //const int64_t t_start = ggml_time_us();
+ 
+-                    ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++                    // device-resident where the backend allows it: this runs every
++                    // speculative cycle and is ~125 MiB of recurrent state
++                    { const int64_t t0 = spec_prof::now();
++                      ckpt.update_tgt_dev(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++                      spec_prof::ev("save", 0, 0, t0); }
+ 
+                     //const int64_t t_total = ggml_time_us() - t_start;
+                     //printf("checkpoint total: %f ms\n", t_total / 1000.0);
+@@ -3568,7 +3593,9 @@ struct server_context_impl {
+         // note: the sync is done here too, so that the wait is also covered by the yield
+         int ret = 0;
+         queue_tasks.yield_to_queue([&]() {
++            const int64_t t_dec0 = spec_prof::now();
+             ret = llama_decode(ctx_tgt, batch_view);
++            spec_prof::ev("dec", batch_view.n_tokens, 0, t_dec0);
+             if (ret == 0 && has_output) {
+                 llama_synchronize(ctx_tgt);
+             }
+@@ -3800,6 +3827,11 @@ struct server_context_impl {
+                 common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
+ 
+                 GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
++                // Upstream logic kept whole: replayed drafts are accepted without
++                // re-verification, and temperature > 0 uses the stored distributions.
++                // Our addition is only the LLAMA_SPEC_PROF timing around the step.
++                const int64_t t_acc0 = spec_prof::now();
++                const int n_draft_prof = (int) slot.spec_draft.size();
+                 const bool can_rollback =
+                     ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
+                     (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_draft <= llama_n_rs_seq(ctx_tgt));
+@@ -3820,6 +3852,7 @@ struct server_context_impl {
+                 } else {
+                     accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft);
+                 }
++                spec_prof::ev("acc", n_draft_prof, (int) accepted.size() - 1, t_acc0);
+                 slot.spec_i_batch.clear();
+ 
+                 GGML_ASSERT(accepted.size() >= 1);
+@@ -3846,13 +3879,17 @@ struct server_context_impl {
+ 
+                         SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
+ 
+-                        ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++                        { const int64_t t0 = spec_prof::now();
++                          ckpt.load_tgt_dev(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++                          spec_prof::ev("rest", 0, 0, t0); }
+ 
+                         if (slot.ctx_dft) {
+                             ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                         }
+ 
+-                        slot.mem.seq_rm(slot.id, ckpt.pos_max + 1, -1);
++                        { const int64_t t0 = spec_prof::now();
++                          slot.mem.seq_rm(slot.id, ckpt.pos_max + 1, -1);
++                          spec_prof::ev("rm", 0, 0, t0); }
+ 
+                         slot.prompt.tokens.keep_first(ckpt.n_tokens);
+                         common_sampler_copy(smpl_save.get(), slot.smpl.get());

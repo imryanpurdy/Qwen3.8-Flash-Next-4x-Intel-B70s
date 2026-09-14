@@ -4,6 +4,16 @@ First public recipe for serving **Qwen/Qwen3.8-Flash-Next-FP8** (125B-main / 6B-
 
 Checkpoint identity (frozen): `bcd9f01ddc9cff2316eb84281bebcd5b058bddce` — verified by `check-weights.sh`, hard-fail on mismatch.
 
+> **PHASE 3 (2026-09-14): jobe is being rebuilt** — OS to SSD, NVMe reformatted
+> for weights, 128 GB ECC RAM landing. The post-upgrade recipe is
+> **[`docs/phase3-hardware-upgrade.md`](docs/phase3-hardware-upgrade.md)** and
+> the target serving line is **Lane 5 (A367 exact-GDN, 46.85 tok/s)** —
+> [`docs/lanes/lane5-a367-exactgdn.md`](docs/lanes/lane5-a367-exactgdn.md),
+> with the rescued kernel extension vendored at `files/a367-kernel/`
+> (sha-verified). The llama.cpp SYCL lane is RETIRED (record only; patch kept
+> at `files/retired-llamacpp-hybrid.patch`). Until the box returns, the
+> Phase-1/2 content below remains the historical recipe.
+
 ## Status today (measured, eager — lab campaign 2026-08-28 → 09-01)
 
 | Config | tok/s | TTFT |
