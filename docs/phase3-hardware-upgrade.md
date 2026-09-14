@@ -77,6 +77,57 @@ time, and update `docs/lanes/lane1-piecewise-graphs.md` with results:
 4. If capture wedges a card (the 2–6 h Xe2 Level-Zero wedge), the mandatory
    wedge-watchdog handles it — do not disable it.
 
+## Speed ceiling and lever ladder (2026-09-14, post-cookbook v1.2.1 analysis)
+
+Reference points from the same hardware class (SergiioB cookbook hub, all
+vLLM XPU, single-stream C1 client post-first n=5):
+
+| Model | Engine/spec | tok/s |
+|---|---|---|
+| Qwen3.6-35B-A3B (3B active) | MTP4 | **170.91** |
+| Nemotron-3.5-Lightning-30B-A3B | DFlash n=7 | **186.61** |
+| Qwen3.8-27B dense GPTQ-INT4 | MTP4 | **106.7** |
+| **Qwen3.8-Flash-Next FP8** | MTP1 (A367) | **46.85** |
+
+Flash-Next is the slowest vLLM number in the table despite being the flagship
+— because it carries four compounding handicaps, each a documented lane:
+
+1. **FP8 runs on fallback GEMMs.** Dense linears = oneDNN W8A8 per-linear
+   dynamic quant; routed MoE = Triton fp8_w8a8 — while the 106.7-tok/s dense
+   27B runs NATIVE INT4 kernels. Lane 3 (native block-FP8 grouped GEMM,
+   dormant upstream) is the fix. Expected: large; ungated today.
+2. **Speculation capped at k=1.** The lossless-verify line runs MTP1; MTP4
+   measured +34% over MTP3 at 512 ctx (20.727 vs 14.889) but is QUARANTINED
+   at 4K (3,904/4,096 engine stall). Lane 2 qualification = the single
+   biggest *known* lever, ~+34% floor by its own 512-ctx data.
+3. **PLE pinned-UVA synchronous reads** during decode (51.2 GiB host).
+   128 GB makes it painless but it still costs bandwidth per rank.
+4. **GDN+QSA hybrid serial verify** — what A367's exact-mode kernel already
+   partially fixed (42.7→33.7 ms/step). Further fusion = kernel work.
+
+Negative result to respect (SergiioB, Sep 13): DFlash2 on 27B = 25 tok/s vs
+51 for plain MTP4 — a second full model as drafter LOSES on B70; native MTP
+heads win. Flash-Next's native 4B MTP head is the right instrument; the play
+is qualifying it at k=4, not adding draft models. (Counter-example kept for
+honesty: Nemotron hit 186.61 WITH DFlash n=7 because its native MTP is 0% —
+broken native head makes a heavy draft the only option.)
+
+Target ladder for phase 3 (each step gated, none speculative without a gate):
+
+| Step | Lever | Gate/expectation |
+|---|---|---|
+| 0 (day one) | A367 eager MTP1 | ≥46.0 (certified floor) |
+| 1 | Lane 4 MBT sweep 64→2048 | kills 77.2 s worst-case TTFT; GLM-5.3 precedent says 2048 |
+| 2 | Lane 2 MTP4@4K qualification | ≥ +30% decode by Lane-2's own 512 data |
+| 3 | Lane 1 graphs (PIECEWISE) retrial | bit-exact gates, then DSv4-precedent upside (80-class on this box) |
+| 4 | Lane 3 native block-FP8 | removes the fallback-GEMM tax; preregistered gates in lane doc |
+
+Fallback if vLLM stalls: SergiioB published fused multi-token llama.cpp
+patches (`qwen4exp-mtp-draft-head.patch`, `sycl-fused-mmvq-mt.patch` @
+llama.cpp `52d4268`, Sep 12) — the MMQ-class kernel work our lane diagnosed
+as missing, published and hash-pinned. Recorded as plan B; primary stays
+vLLM per Ryan's 2026-09-14 decision.
+
 ## Retired lane (record only)
 
 The llama.cpp SYCL lane (lineage `337c8bb58` + hybrid.patch `691a81d`, 12/12)
