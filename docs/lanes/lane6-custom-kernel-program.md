@@ -47,27 +47,44 @@ Expected: 46.85 × 1.34 ≈ **63 tok/s** (floor — Lane 2's own 512-ctx data).
 
 ## Workstream B — native block-FP8 grouped GEMM on Xe2 (weeks-scale; the ceiling raiser)
 
-Goal: replace the fallback GEMM path for routed-expert FP8 with a native
-Xe2 block-FP8 grouped GEMM — the same architectural role the INT4 grouped
-GEMM plays for the 27B at 106.7.
+**UPDATE 2026-09-14 (recon hit): the native kernel already exists and ships
+in our binary.** Evidence: `_xpu_C.abi3.so` (A367 rescue) contains
+`xe2_block_fp8_small_m`, `cutlass_grouped_gemm_xe2`, and oneDNN w8a8
+fallbacks as separate symbols; vllm-xpu-kernels master
+(`fused_moe_interface.py`, PR #598 era) shows block-FP8 native Xe2 grouped
+GEMM is **default-on** (`VLLM_XPU_FUSED_MOE_NATIVE_BLOCK_FP8` defaults "1"),
+with the slow ref path only when explicitly disabled. There is also a BMG
+(Battlemage) nightly benchmark workflow upstream.
+
+So Workstream B collapses from "write the kernel" to **"audit and steer the
+dispatch"**:
+
+1. **Day-one dispatch audit (after first light):** instrument which MoE path
+   Flash-Next actually takes in the lab stack (0.21.0-b1 + 16-patch overlay
+   + kernel stage `2f829747`). The ceiling analysis assumed Triton
+   fp8_w8a8 for routed experts — verify, do not assume: the binary has both
+   paths compiled in, and which one serves decode is an empirical question
+   (grep dispatch logs / wrap `cutlass_grouped_gemm_xe2` with a counter).
+2. **If routed experts hit oneDNN/triton:** flip the env to force native
+   (`VLLM_XPU_FUSED_MOE_USE_REF=0`, native block-FP8 on) and microbench.
+3. **If already native:** the 46.85 line is a *tuned-native* baseline and
+   the ceiling-raiser becomes the small-M kernel's tile/occupancy work
+   (decode M≤4 shapes) against its own microbench.
+4. Either way: microbench first (`benchmark/benchmark_gemm_onednn.py` +
+   nightly BMG workflow as templates) at routed-expert shapes M=1/2/4 before
+   any e2e claims.
 
 Inputs we already hold:
-- `libgrouped_gemm_xe_2.so` / `_default.so` (rescued, sha-verified) —
-  reference for the grouped-GEMM launcher/tile conventions on Xe2.
-- vLLM upstream CUDA blockwise-FP8 (CUTLASS, 128×128 weight blocks +
-  per-token-per-128 activation scales) as the algorithmic spec.
-- Xe2 XMX: native FP8 dot products, DPAS-shaped tiles.
+- `libgrouped_gemm_xe_2.so` / `_default.so` + `_xpu_C.abi3.so` (rescued,
+  sha-verified) — the compiled native paths are IN the binary.
+- Upstream source mirror cloned locally (`~/xpu-kernels-recon`):
+  `csrc/xpu/grouped_gemm/xe_2/` (gemm_xe2.hpp has block-FP8 scale handling,
+  e4m3), `vllm_xpu_kernels/fused_moe_interface.py` (routing + env contract),
+  `benchmark/` harnesses.
 
-Build strategy: microbenchmark FIRST (routed-expert GEMM shapes at M=1/2/4,
-N,K from the 48-layer config) before any integration; keep the oneDNN
-lesson sacred — **measure before adopting**, eager fallback stays a flag.
-
-Pre-registered gates: quality battery 7/7; acceptance-rate parity ±2%;
-≥1.5× on the routed-GEMM microbench; e2e A/B vs A367 line on the same
-prompt set; no speed number quoted without the battery pass.
-
-Expected: removes the fallback-GEMM tax; the class table says this silicon
-does 100+ when the kernels are native. Ambition target: **100+ tok/s**.
+Gates unchanged: quality battery 7/7; acceptance-rate parity ±2%; microbench
+≥1.5× before integration flips; e2e A/B vs A367 line; no speed number quoted
+without the battery pass.
 
 ## Workstream C — graphs retrial (config, not code; after 128GB RAM)
 
