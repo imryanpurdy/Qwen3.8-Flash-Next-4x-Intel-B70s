@@ -76,11 +76,13 @@ Legend: **SSD** = wiped by install · **NVMe** = survives (do NOT let installer 
 - **Recovery if missed:** boot USB live media → `blkid` new sda2 → mount sda1 → rewrite the fs_uuid line (same edit) → reboot. The stale `EFI/ubuntu/` leftover and dead Boot0003 are irrelevant to this recovery.
 - **Who:** ______ · **How:** ______
 
-### R2 — Tailscale identity lost ⇒ box cannot be reached, full stop — **HIGH (if no auth key)**
-`100.122.128.100` is the **only** known route to jobe. `/var/lib/tailscale` (node key + prefs) is on the wiped SSD. No LAN-only path is recorded (enumerate `ip a`/`ip route` to check; **UNVERIFIED whether a routable LAN IP exists**).
-- **Prevention:** create a pre-auth key in the tailnet admin console BEFORE wipe (one-time, ~2 d expiry, tag `server:*` if tags exist), store off-box; after first boot run `tailscale up --authkey … --ssh`.
-- **Recovery if no key/wrong key:** physical console or KVM (keyboard + monitor / headless KVM dongle) → login locally → `tailscale up` interactively (login URL). If no console and no key: **box is dark until the site is visited.**
-- **Who:** ______ · **How:** ______
+### R2 — Tailscale identity lost ⇒ box unreachable, full stop — **HIGH — THE ONLY REMOTE PATH (corrected 2026-09-20, Ryan)**
+
+`100.122.128.100` is the only route to jobe. **The LAN IP (192.168.100.197) is NOT a recovery path — it is only reachable from inside Alex's LAN; neither Ryan nor GLM is on that network.** Post-wipe, fresh 24.04 has no Tailscale and no remote access until `tailscale up --authkey` runs. The pre-auth key is therefore **mandatory infrastructure, not belt-and-suspenders**.
+- **Requirement (Ryan):** key is **reusable and non-expiring for the rebuild window**, and delivered **non-interactively** — baked into the autoinstall `user-data` on the install USB, or fetched by a first-boot script from a URL Ryan hosts (GLM cannot pull from the box before Tailscale is up; the box-side fetch must be a push-from-outside or a curl from a location Ryan controls). Never typed interactively on the console, never stored in git.
+- **First-boot sequence (bake into user-data or /root/first-boot.sh):** install tailscale → `tailscale up --authkey <KEY> --ssh` → verify `tailscale status` shows `jobe` + `100.122.128.100` → GLM regains remote control for everything after.
+- **Recovery if key missing/wrong:** physical console (Alex, on-site) → interactive `tailscale up` login. Until then the box is dark to both of us.
+- **Who:** Alex creates the key (in flight, 2026-09-20) · **How:** user-data embed or first-boot curl — fill exact mechanism when the key exists
 
 ### R3 — Install media + first-boot console — **MEDIUM**
 Ubuntu 24.04.4 LTS desktop/server ISO (HWE 6.17 must be chosen; GA 6.8 will NOT work — BOM §3.4) on USB; the firmware-skip-BootOrder quirk likely needs a **boot-menu hotkey** (F-key) or one-time boot from USB — physical or KVM HID. Wired network required for OMIX (multi-GB). Also needed: a **second USB ≥256 GB** for the backup tar / INT4 if external-drive path chosen, or confirm off-box scp path.
@@ -213,7 +215,7 @@ Notes: the script prints **no secrets** (`.env` masked, `authorized_keys` counte
 | **G3** | Rollback anchor saved + verified | `docker save` done; `sha256sum -c` PASS; tar on **survivor** (`/data/preserve`) AND off-box/USB; `docker image ls` list archived; `vllm-xpu-b70:26.31-test` also saved or its pull provenance confirmed |
 | **G4** | Engine config off-box | `fn-recipe-int4.tgz` (+ `.env` real copy on USB/off-box; masked copy here) verified: `CAP_SIZES_LIST=1,…,16`, `MAX_NUM_SEQS=16`, `PREFLIGHT_DISK_GB`, `PORT=8021`, `HF_HOME` present; `start.sh` sha matches rig (v24h2); `patch-capsizes.py`/`patch-capoverride.py` in local repo = commit 3589249 |
 | **G5** | Weights decided | INT4: external copy verified (du ≈169 GB) **or** re-download plan recorded (dl-int4.sh local, token off-box, ~hours, wired); FP8: `df -h /data` recorded, no plan touches NVMe; xpu_artifacts sha256 = the three hashes (already known-good locally) |
-| **G6** | Tailscale plan | Pre-auth key created + stored off-box **and** console/blob arrangement known (`tailscale up --authkey … --ssh`); or *explicit* plan = physical console at first boot. Route to jobe must exist before any post-install work |
+| **G6** | Tailscale plan | Pre-auth key created (reusable, non-expiring for the window) + delivered **non-interactively**: baked into autoinstall user-data on the USB or fetched by a first-boot script from a Ryan-hosted URL — GLM has no path to the box before Tailscale is up, and the LAN IP is inside Alex's LAN only (not a recovery path). Physical console at first boot is the fallback only. |
 | **G7** | sudo/root plan | Install will create user **bonz** in `sudo`/`docker`/`video`/991-or-render; set root password at install; **or** single-user recovery documented. `id bonz` + `sudo -n true` expected on first shell |
 | **G8** | Boot-chain plan | Explicit post-install step written into runbook (GAP B), per **corrected R1**: from live session before first reboot — `lsblk -f` new sda2 UUID → mount **sda1** (the only ESP) → sed `search.fs_uuid` in `EFI/UBUNTU-SSD/grub.cfg` → `efibootmgr -v` confirms `ubuntu-ssd` still anchors sda1 PARTUUID `b160562b` → installer used manual partitioning and did NOT repartition sda1. Grub-rescue recovery sheet printed and beside the machine |
 | **G9** | Runner/console | KVM-dongle or monitor+keyboard staged at the box (R1/R2 likely need a live-session moment); for headless: confirmed KVM + USB HID |
