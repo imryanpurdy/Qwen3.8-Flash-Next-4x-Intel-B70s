@@ -15,23 +15,35 @@ Seed key material lives ONLY local (scout/rebuild/) + rig (/data/rebuild-install
 | autoinstall.yaml | /data/rebuild-install/seed/ (+ inside initrd at autoinstall/user-data AND autoinstall.yaml) | md5 3ceb2217d592614f1ba94f73934aa240 |
 | stage-v24h2-rollback.tar.gz | /data/ | sha256 3fc1d174…c3a706 (re-verified at staging; off-box copy verified earlier) |
 
-## Boot mechanism (why it works)
+## Boot mechanism (variant C — remastered ISO, supercedes original seed-in-initrd design)
 
 GRUB entry (id `rebuild`, /etc/grub.d/42-rebuild → /boot/grub/grub.cfg):
-`linux /rebuild/casper-vmlinuz iso-scan/filename=/rebuild-install/ubuntu-24.04.5-live-server-amd64.iso autoinstall "ds=nocloud;s=/run/autoinstall/" ---`
-`initrd /rebuild/seed-initrd.gz`
+`linux /rebuild/casper-vmlinuz iso-scan/filename=/rebuild-install/autoinstall-remaster.iso autoinstall "ds=nocloud;s=/cdrom/autoinstall/" ---`
+`initrd /rebuild/casper-initrd`
 
-- Root of the ISO **never mounted by grub** — the entry bootstraps casper from /boot (sda2), and
-  the initramfs `iso-scan` service finds the ISO on the NVMe and loop-mounts the live squashfs.
-  (First staged entry lacked iso-scan — caught in the pre-reboot read-back; would have dropped to
-  an initramfs prompt = keyboard trip. Fixed, regenerated, re-verified.)
-- Seed delivery is `ds=nocloud;s=/run/autoinstall/` — casper unpacks the *first* initrd segments
-  into `/run/autoinstall` (the seed cpio segment is prepended to casper-initrd; verified inside
-  via `cpio -it`: autoinstall/user-data, autoinstall/meta-data, autoinstall/authorized_keys,
-  legacy autoinstall.yaml). No HTTP server, no partition mounting, no medium dependency.
+- Seed rides INSIDE the remastered ISO at /autoinstall/{user-data,meta-data}; subiquity reads it
+  from the iso-scan-mounted ISO at /cdrom/autoinstall/. Stock casper initrd untouched —
+  **attempt 1 failed fatally by concatenating a gzip seed segment onto casper's RAW-CPIO initrd**
+  (kernel 6.8.0-139 panicked: no root, zero block devices). Never concat foreign segments onto
+  casper's uncompressed cpio.
+- Remaster = xorriso extract of the official ISO + seed dir + rebuild with the ORIGINAL's
+  `-report_el_torito as_mkisofs` options (El Torito BIOS + UEFI entries preserved; verified by
+  re-reporting boot structures from the remaster). --modification-date = 16 digits.
+- Validated END-TO-END in QEMU/KVM on the rig BEFORE re-arming jobe: replica disk with jobe's
+  exact geometry (1G ESP + 2G ext4 + LVM PV), UEFI OVMF + -machine q35 (OVMF needs q35's AHCI;
+  SeaBIOS/i440FX runs IDE but subiquity then plans BIOS bootloader and rejects the UEFI-targeted
+  config with "did not create needed bootloader partition"), same -kernel/-initrd/-append handoff
+  as the GRUB entry. Seed fixes validated there: grub.reorder_uefi=false, no `flag: boot` on the
+  preserved ESP (preserve-matching rejects flag mismatch), explicit partition sizes (sda1
+  1073741824 / sda2 2147483648 / sda3 996982595072). curtin "configuring disk: sda" +
+  "curtin command install" PASSED on the replica.
 - One-shot: `grub-reboot rebuild` → boots installer this boot only. If the casper boot hangs and
   the box is hard-reset, the one-shot is consumed → old OS boots → staging intact → re-arm and retry.
-- `interactive-sections: []` + full identity/storage config = fully unattended; no keyboard prompt anywhere.
+- `interactive-sections: []` + full identity/storage config = fully unattended.
+- Tailscale sequencing (Ryan directive): the OLD node is logged out (`tailscale logout`) chained
+  into the SAME command as the reboot — freeing the `jobe` MagicDNS name so the fresh install
+  registers AS `jobe`, never `jobe-1`. The QEMU test VM never registered (died pre-late-commands);
+  if a validation boot of the replica registers a node, it is logged out BEFORE the real box fires.
 
 ## Storage contract (Ryan-confirmed layout, encoded verbatim)
 
