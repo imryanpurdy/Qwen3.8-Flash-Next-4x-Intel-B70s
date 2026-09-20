@@ -2,17 +2,13 @@
 # rebuild-verify.sh — runbook L1-L5 verification ladder as ONE gate script (docs/2026-09-19-platform-rebuild-runbook.md sec 4).
 # Usage: ./rebuild-verify.sh (env: PORT= MODEL= MNS= CONTAINER= BURSTS=). Windows-authored: if bash errors, sed -i 's/\r$//' $0
 set -uo pipefail   # no set -e: probes/restarts handled explicitly below
-# ------------- parameters (env-overridable) -------------
 PORT=${PORT:-8021}; MODEL=${MODEL:-qwen3.8-flash-next}       # SERVED_MODEL_NAME
 MNS=${MNS:-16}; CONTAINER=${CONTAINER:-qwen38-flash-next}; BURSTS=${BURSTS:-15}
-CONC=${CONC:-8}; READY_TIMEOUT=${READY_TIMEOUT:-1800}        # L1 /v1/models poll cap (s)
-ENGINE_LOG=${ENGINE_LOG:-.run/server.log}  # TODO-RYAN: confirm path from the engine dir
-STALLSPY_CYCLES=${STALLSPY_CYCLES:-75}; STALLSPY_CADENCE=${STALLSPY_CADENCE:-5}; STALLSPY_MAX=${STALLSPY_MAX:-300}; STALLSPY_TIMEOUT=${STALLSPY_TIMEOUT:-900}  # L3 loop/dumper cap (s)
-STALL_MIN=200   # L3 gate floor (runbook text targets >=300)
+CONC=${CONC:-8}; READY_TIMEOUT=${READY_TIMEOUT:-1800}; ENGINE_LOG=${ENGINE_LOG:-.run/server.log}  # L1 poll cap (s); TODO-RYAN: confirm engine-log path
+STALLSPY_CYCLES=${STALLSPY_CYCLES:-75}; STALLSPY_CADENCE=${STALLSPY_CADENCE:-5}; STALLSPY_MAX=${STALLSPY_MAX:-300}; STALLSPY_TIMEOUT=${STALLSPY_TIMEOUT:-900}; STALL_MIN=200  # L3 loop/dumper cap (s); gate floor (runbook targets >=300)
 VLLM_SP=/opt/venv/lib/python3.12/site-packages/vllm
 API=http://localhost:${PORT}; DUMP_DIR=/tmp/rebuild-verify-dumps; TEE_LOG=${TEE_LOG:-/tmp/rebuild-verify.log}
-exec > >(tee -a "$TEE_LOG") 2>&1
-echo "$(date -u +%FT%TZ) === rebuild-verify start (PORT=$PORT MODEL=$MODEL MNS=$MNS BURSTS=$BURSTS) ==="
+exec > >(tee -a "$TEE_LOG") 2>&1; echo "$(date -u +%FT%TZ) === rebuild-verify start (PORT=$PORT MODEL=$MODEL MNS=$MNS BURSTS=$BURSTS) ==="
 say(){ printf '%s\n' "$*"; }; warn(){ say "WARN: $*"; }
 DOCKER_OK=0; command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && DOCKER_OK=1
 [[ $DOCKER_OK -eq 1 ]] || warn "no docker/daemon — container-local steps will SKIP"
@@ -80,8 +76,7 @@ l1(){ # BOOT: READY + boot provenance + in-container canaries + capture-size cov
 }
 l2(){ # KNOWN-ANSWER: Paris + alphabet + engine alive post-probe
   say "=== L2 KNOWN-ANSWER ==="
-  local body o
-  body=$(complete 'The capital of France is' 12)
+  local body o; body=$(complete 'The capital of France is' 12)
   printf '%s' "$body" | grep -q 'Paris' || { say "FAIL[L2]: 'Paris' absent: $(printf '%s' "$body" | head -c 200)"; return 1; }
   say "  L2: France -> Paris OK"
   body=$(complete 'The alphabet in order: ' 12)
@@ -121,8 +116,7 @@ l3(){ # L0-ABSENCE: py-spy proof — >=200 dumps, 0 x appendUSMMemcpy
   local dp=$!; sleep 2
   say "  L3: dumper armed — firing 1 burst (${CONC}-way x 4 rounds x 600 tok)..."
   soak_run "$CONC" >/dev/null 2>&1 || true
-  local have=0 i=0
-  while (( i < 120 )); do have=$(ls "$DUMP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' '); (( have >= STALL_MIN )) && break; sleep 5; i=$((i+1)); done
+  local have=0 i=0; while (( i < 120 )); do have=$(ls "$DUMP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' '); (( have >= STALL_MIN )) && break; sleep 5; i=$((i+1)); done
   kill "$dp" 2>/dev/null; wait "$dp" 2>/dev/null
   have=$(ls "$DUMP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' ')
   (( have >= STALL_MIN )) || { say "FAIL[L3]: only ${have} dumps (< ${STALL_MIN}, dumper cap ${STALLSPY_TIMEOUT}s)"; return 1; }
@@ -154,8 +148,7 @@ l4(){ # CAMPAIGN: BURSTS bursts; zero errs, zero non-200 post-probes, zero stall
   done
   local overall
   overall=$(awk -v a="$aggs" 'BEGIN{n=split(a,x," "); s=0; for(i=1;i<=n;i++) s+=x[i]; if(n) printf "%.1f", s/n; else print "n/a"}')
-  say "  L4 overall: sustained per burst=$aggs | mean=$overall | total_errs=$tot_errs | stalls=$stalls/${BURSTS}"
-  say "  L4 decision rule (pre-registered): 0 stalls=PASS-SHIP | 1=INVESTIGATE | >=2=FAIL"
+  say "  L4 overall: sustained per burst=$aggs | mean=$overall | total_errs=$tot_errs | stalls=$stalls/${BURSTS} | decision rule: 0 stalls=PASS-SHIP | 1=INVESTIGATE | >=2=FAIL"
   (( stalls == 0 )) && { say "L4 PASS-SHIP"; return 0; }
   (( stalls == 1 )) && { say "FAIL[L4]: 1 stall — INVESTIGATE before shipping (runbook 0-1 caveat noted)"; return 1; }
   say "FAIL[L4]: $stalls stalls >= 2 — fix ineffective, lock diagnostics"; return 1
@@ -170,15 +163,13 @@ l5(){ # MTP LADDER: report-only (no gate) — .env flips + boots are manual
   fi
   cat <<'EOF'
   Manual steps (runbook sec 4 L5 — NOT attempted here; each = .env edit + reboot):
-    1) MTP0 baseline: 1x soakfix 8-way x4x600 vs pre-rebuild anchor boot rel0027 (v24h2,
-       MNS16: sustained 314.5/310.4/320.1, mean 275.9, 0 stalls).
+    1) MTP0 baseline: 1x soakfix 8-way x4x600 vs anchor boot rel0027 (v24h2 MNS16:
+       sustained 314.5/310.4/320.1, mean 275.9, 0 stalls).
     2) MTP1+graphs capture-fault check: .env VLLM_XPU_ENABLE_XPU_GRAPH=1 AND
-       SYCL_UR_USE_LEVEL_ZERO_V2=0; reboot (runbook 2.2), start engine, 1 burst; grep
-       'SpecDecoding metrics' for mean acceptance length + avg draft acceptance rate
-       (SKIP-note conditions if absent). Capture must NOT wedge (boot 4010612 must not
-       recur — P4/P5 removed the mid-capture D2H).
-    3) Record numbers with boot ID + stack version (sec 6). Do NOT default MTP1+graphed
-       until the capture ladder shows no fault. Re-run this script for L1/L2 after each flip.
+       SYCL_UR_USE_LEVEL_ZERO_V2=0; reboot (2.2), start, 1 burst; grep 'SpecDecoding
+       metrics' for mean acceptance length + avg draft acceptance rate. Capture must NOT
+       wedge (boot 4010612 must not recur — P4/P5 removed mid-capture D2H).
+    3) Record numbers with boot ID + stack (sec 6); no MTP1+graphed default until capture OK.
 EOF
 }
 # ------------------------------- ladder driver + verdict ------------------------
@@ -189,7 +180,7 @@ if [[ "$L1S" == "PASS" ]]; then if l2; then L2S=PASS; else L2S=FAIL; fi; fi
 if [[ "$L2S" == "PASS" ]]; then if l3; then [[ "$L3_MODE" == "SKIP" ]] && L3S=SKIP || L3S=PASS; else L3S=FAIL; fi; fi
 if [[ "$L3S" == "PASS" || "$L3S" == "SKIP" ]]; then if l4; then L4S=PASS; else L4S=FAIL; fi; fi
 l5   # report-only — always printed
-say ""; say "======================== FINAL VERDICT ========================"
+say "======================== FINAL VERDICT ========================"
 say "  L1 BOOT (ready+canaries+capture coverage): $L1S"
 say "  L2 KNOWN-ANSWER:                           $L2S"
 say "  L3 L0-ABSENCE (py-spy):                    $L3S"
