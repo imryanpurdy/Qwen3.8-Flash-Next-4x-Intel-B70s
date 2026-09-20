@@ -1,0 +1,12 @@
+total 3336
+drwxr-xr-x   2 root root    4096 Apr 20 18:07 .
+drwxr-xr-x 100 root root   28672 Sep 11 06:57 ..
+-rw-r--r--   1 root root  192150 Apr 15 11:57 bmg_guc_70.bin.zst
+-rw-r--r--   1 root root  152006 Apr 15 11:57 bmg_huc.bin.zst
+-rw-r--r--   1 root root    1655 Apr 15 11:57 fan_control_8086_e20b_8086_1100.bin.zst
+-rw-r--r--   1 root root 1137458 Apr 15 11:57 lnl_gsc_1.bin.zst
+-rw-r--r--   1 root root  192831 Apr 15 11:57 lnl_guc_70.bin.zst
+-rw-r--r--   1 root root  166872 Apr 15 11:57 lnl_huc.bin.zst
+-rw-r--r--   1 root root 1144100 Apr 15 11:57 ptl_gsc_1.bin.zst
+-rw-r--r--   1 root root  201134 Apr 15 11:57 ptl_guc_70.bin.zst
+-rw-r--r--   1 root root  172499 Apr 15 11:57 ptl_huc.bin.zst

@@ -423,11 +423,15 @@ as default until the ladder shows no capture fault.
 
 ## 5. Rollback
 
-- **Anchors:** preserved image at `/srv/rollback/stage-v24g-pre-rebuild.tar` (+ sha256), the
-  preserved `.env` (0.2), the preserved scout tree. Rollback is only viable while these exist —
+- **Anchors:** preserved image at `/data/preserve/` **(GAP A fix 2026-09-20: the original
+  `/srv/rollback` is on the wiped SSD — real backups went to `/data/stage-v24h2-rollback.tar.gz`,
+  sha256 `3fc1d174…c3a706`, gzip -t verified; second copy pulling off-box)**, the
+  preserved `.env` (0.2, off-box at `evidence/2026-09-20/rollback-unit/`), the preserved scout
+  tree. Rollback anchor image = `stage-v24h2:rollback` (ae528b55ee4e, NOT v24g — v24h2 carries
+  the capture-list fixes). Rollback is only viable while these exist —
   never delete them until L5 passes on the new build (then archive, don't delete, for six weeks).
 - **Procedure:** stop container + watchdog; `docker load -i
-  /srv/rollback/stage-v24g-pre-rebuild.tar`; retag as the serving name; restore `.env` from
+  /data/stage-v24h2-rollback.tar.gz` (or the off-box copy); retag as the serving name; restore `.env` from
   `/srv/preserve/`; restart via start.sh with watchdog; gate L1+L2 only — **do not assert L3–L5
   results from a different boot provenance** (the campaign proviso: numbers are per-boot; a
   rollback boot is its own record).

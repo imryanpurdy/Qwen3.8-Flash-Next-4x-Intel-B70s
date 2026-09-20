@@ -1,0 +1,15 @@
+== HOST
+== END OF STATE == disks
+== mounts incl. /srv question
+== == boot / EFI
+== == kernel / GPU / firmware
+== == docker / containers
+== == weights & data
+== == engine dir (hash) ==
+== == /tmp harness state ==
+== == network ==
+== == users / ssh / sudo ==
+== == cron / systemd / modules / sysctl / udev / netfilter ==
+== == python / venvs / pip ==
+== == bash history (provenance) ==
+== == DONE — archive ==

@@ -1,0 +1,4 @@
+total 20
+drwx------  2 bonz bonz  4096 Sep  1 04:08 .
+drwxr-x--- 24 bonz bonz 12288 Sep 19 19:31 ..
+-rw-------  1 bonz bonz   109 Sep  1 04:35 authorized_keys

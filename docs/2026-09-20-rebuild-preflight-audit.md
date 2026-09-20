@@ -17,7 +17,7 @@
 | INT4 weights `/home/bonz/hf-int4` (≈169 GB, serving identity `Intel/Qwen3.8-Flash-Next-W4A16-AutoRound`) | **NO** (on SSD) — re-downloadable via preserved `dl-int4.sh` (HF repo is public; ~169 GB re-fetch, needs HF token + bandwidth) — relocation to NVMe is blocked by space (see #7) | Section 1 #7 |
 | Vendor GPU kernels `~/xpu_artifacts/{_xpu_C.abi3.so, libgrouped_gemm_xe_2.so, libgrouped_gemm_xe_default.so}` (sha `593a7107…abc43b`, `2da4a494…90d13`, `4b1ca1e6…b5161`) | **YES — already preserved locally** at `files/a367-kernel/` (sha verified 2026-09-20, 99 MB); verify rig copy matches, else rsync | Section 1 #9 |
 | FP8 weights `/data/hf` (185.56 GB) | **YES** — NVMe untouched by SSD-only install (verify `df`/mount after) | Section 1 #8 |
-| Boot chainloader on NVMe ESP (`Boot0003` → `EFI/ubuntu/grub.cfg` → SSD `/boot` UUID) | Surfives, but **goes STALE**: new install rewrites `/dev/sda2` UUID; firmware ignores BootOrder and will boot a dead chainloader ⇒ **no boot** | R1 |
+| Boot chain (SSD-local: Boot0002 `ubuntu-ssd` → sda1 PARTUUID `b160562b` → `EFI/UBUNTU-SSD/grub.cfg` → sda2 fs_uuid `25094d26…`) | Survives, but **goes STALE**: sda2 reformat changes the UUID; if sda1 is *repartitioned*, the PARTUUID anchor dies ⇒ **no boot** | R1 (CORRECTED 2026-09-20 — no NVMe chainloader exists post-migration; NVMe = single WEIGHTS partition) |
 | Whole `/etc` customization (fstab, sshd_config, docker daemon.json, udev, modules-load.d, sysctl, sudoers, firewall, cron, systemd) | **NO** — recreated from scratch; Section 3 archives it | Section 3 |
 | GuC firmware files `/lib/firmware/xe/*guc*` | **NO** — must come from `linux-firmware`/OMIX repo package post-install; if package is <70.65 → manual drop (BOM §5) | R4 |
 | BIOS/NVRAM, card IFWI firmware | **YES** (card/firmware-resident; OS reinstall does not touch) — but **must be checked**: IFWI ≥775 and GuC target 70.65 | R4 |
@@ -62,10 +62,18 @@ Legend: **SSD** = wiped by install · **NVMe** = survives (do NOT let installer 
 
 > **Who: ______  How: ______** — to be filled by Ryan/site operator. "How" = the recovery procedure; "Who" = who executes (name + role). Never invented here.
 
-### R1 — Boot chainloader goes stale after SSD wipe (worse: no boot at all) — **HIGH**
-Firmware **ignores BootOrder NVRAM writes** (BootCurrent stuck at `0003`; proven in `migrate-B5.sh`). It boots `Boot0003` = NVMe ESP `/EFI/ubuntu/grub.cfg` (chainloader) → `search.fs_uuid <OLD sda2 UUID>` → SSD `hd1,gpt2` grub. Reinstall reformats `/dev/sda2` ⇒ **stale UUID ⇒ grub cannot find root ⇒ dropped to grub-recovery / no boot.**
-- **Prevention (no physical needed):** from the *installer live session*, AFTER install but BEFORE the first reboot: `lsblk -f` (new sda2 UUID) → mount NVMe ESP → overwrite `EFI/ubuntu/grub.cfg` with `search.fs_uuid <NEW> root hd0,gpt2` + `set prefix=($root)'/grub'` + `configfile $prefix/grub.cfg` (pattern = existing chainloader; keep `.nvme-bak` files intact). Then reboot. (Mounted live env: "Continue Testing" — installer stays running.)
-- **Recovery if missed:** box will not boot on its own. Boot USB live media → `blkid` new sda2 → mount `/dev/nvme0n1p1` → rewrite chainloader grub.cfg (same edit) → reboot. Second fallback: temporarily restore `*.nvme-bak` originals (old NVMe grub → old `ubuntu-vg` root is still on the NVMe, deactivated; boots the PRE-MIGRATION OS — a working but obsolete system).
+### R1 — Boot chain update after SSD reinstall — **HIGH** (CORRECTED 2026-09-20, live preflight overrides migration-era assumption)
+
+**Verified live topology (efibootmgr + blkid + mounts, 2026-09-20):** BootCurrent **0002** =
+`ubuntu-ssd`, anchored to **sda1 PARTUUID `b160562b-4c03-4455-b86c-66438834ffb8`** with path
+`\EFI\UBUNTU-SSD\SHIMX64.EFI`; its grub.cfg does `search.fs_uuid 25094d26-b9fc-48df-b94b-391ec2d71260 root hd0,gpt2` (= **sda2** `/boot`). The NVMe is a **single ext4 `WEIGHTS` partition** (`/data`, a87f17fd…) — **no ESP, no old ubuntu-vg, no NVMe chainloader exists post-migration**; `EFI/ubuntu/` on sda1 (search.fs_uuid 46850fa9…) is a stale pre-migration leftover. BootOrder `0002,0004,0001,0003,0000`; Boot0003 (VenHw "Ubuntu") is dead weight from the NVMe era.
+
+**Residual risks after reinstall (reduced from the migration-era shape):**
+- **sda2 reformat ⇒ stale fs_uuid** in `EFI/UBUNTU-SSD/grub.cfg` → grub rescue / no boot. Fix is one line, SSD-local (no NVMe involvement).
+- **sda1 repartition ⇒ PARTUUID `b160562b` changes ⇒ Boot0002's HD(1,GPT,…) anchor dies** (worse: no boot). Mitigation: installer must **reuse, not recreate, the sda1 ESP** (manual partitioning: mount sda1 as /boot/efi, do NOT reformat it, or reformat-only keeps PARTUUID). If it changes anyway: re-register via `efibootmgr -c` from the live session.
+- Installer may add a fresh NVRAM entry — harmless while `ubuntu-ssd`/sda1 anchor survives.
+- **Prevention (live session, before first reboot):** `lsblk -f` → new sda2 UUID → mount sda1 → `sed -i` the `search.fs_uuid` line in `EFI/UBUNTU-SSD/grub.cfg` to the new UUID → `efibootmgr -v` confirms `ubuntu-ssd` still anchors to sda1's PARTUUID → reboot. **Full pre-change ESP backup preserved off-box:** `evidence/2026-09-20/sda1-efi/sda1-efi-20260920.tgz` (5.2 MB, whole EFI tree).
+- **Recovery if missed:** boot USB live media → `blkid` new sda2 → mount sda1 → rewrite the fs_uuid line (same edit) → reboot. The stale `EFI/ubuntu/` leftover and dead Boot0003 are irrelevant to this recovery.
 - **Who:** ______ · **How:** ______
 
 ### R2 — Tailscale identity lost ⇒ box cannot be reached, full stop — **HIGH (if no auth key)**
@@ -207,7 +215,7 @@ Notes: the script prints **no secrets** (`.env` masked, `authorized_keys` counte
 | **G5** | Weights decided | INT4: external copy verified (du ≈169 GB) **or** re-download plan recorded (dl-int4.sh local, token off-box, ~hours, wired); FP8: `df -h /data` recorded, no plan touches NVMe; xpu_artifacts sha256 = the three hashes (already known-good locally) |
 | **G6** | Tailscale plan | Pre-auth key created + stored off-box **and** console/blob arrangement known (`tailscale up --authkey … --ssh`); or *explicit* plan = physical console at first boot. Route to jobe must exist before any post-install work |
 | **G7** | sudo/root plan | Install will create user **bonz** in `sudo`/`docker`/`video`/991-or-render; set root password at install; **or** single-user recovery documented. `id bonz` + `sudo -n true` expected on first shell |
-| **G8** | Boot-chainloader plan | Explicit post-install step written into runbook (GAP B): from live session, before reboot — `lsblk -f` new sda2 UUID → rewrite NVMe ESP `grub.cfg` chainloader to that UUID → keep `.nvme-bak` → then reboot, and confirm `efibootmgr` still shows Boot0003 → boots SSD. Grub-rescue recovery sheet printed and beside the machine |
+| **G8** | Boot-chain plan | Explicit post-install step written into runbook (GAP B), per **corrected R1**: from live session before first reboot — `lsblk -f` new sda2 UUID → mount **sda1** (the only ESP) → sed `search.fs_uuid` in `EFI/UBUNTU-SSD/grub.cfg` → `efibootmgr -v` confirms `ubuntu-ssd` still anchors sda1 PARTUUID `b160562b` → installer used manual partitioning and did NOT repartition sda1. Grub-rescue recovery sheet printed and beside the machine |
 | **G9** | Runner/console | KVM-dongle or monitor+keyboard staged at the box (R1/R2 likely need a live-session moment); for headless: confirmed KVM + USB HID |
 | **G10** | GPU firmware plan | GuC: post-install check `dmesg | grep guc` must show **70.65** (never 70.72.1); if `<70.65` → man-package/manual `bmg_guc_70.bin` + `update-initramfs` (or A/B 70.44.1 recorded); IFWI ≥775 verified NOW (`xpu-smi`/dmesg) — **if <775, stop and decide flash (physical, R4)** |
 | **G11** | BIOS record | IOMMU + SecureBoot + ReBAR read out and written next to the ladder; IOMMU OFF is the Intel-validated posture unless evidence says otherwise |
