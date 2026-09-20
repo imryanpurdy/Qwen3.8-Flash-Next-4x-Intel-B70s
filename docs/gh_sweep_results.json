@@ -1,0 +1,2372 @@
+{
+  "repo:vllm-project/vllm \"stuck running\" concurrent": {
+    "total": 19,
+    "items": [
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 42271,
+        "title": "[Bug]: MTP + FULL_AND_PIECEWISE cudagraph deadlocks at HT batched-decode when bonus-token-only forward shape is scheduled",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/42271",
+        "created": "2026-05-11T03:54:35Z",
+        "updated": "2026-09-11T01:43:42Z",
+        "is_pr": false,
+        "labels": [
+          "stale"
+        ]
+      },
+      {
+        "number": 40926,
+        "title": "[Bug]: V1 engine + MTP + GLM-5.1 (DSA + MoE + MLA) \u2014 workers hang under sustained traffic, sample_tokens RPC timeout, EngineDeadError",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/40926",
+        "created": "2026-04-26T15:17:40Z",
+        "updated": "2026-09-04T21:21:04Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 49317,
+        "title": "[Bug]: [Performance] AsyncLLM `add_request` runs multimodal `process_inputs` (HF processor) synchronously on the event-loop thread, serializing per-request image preprocessing and starving the GPU under concurrent multi-image requests",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/49317",
+        "created": "2026-07-21T10:02:28Z",
+        "updated": "2026-08-01T15:10:53Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 42371,
+        "title": "[Bug]: SimpleCPUOffloadConnector: requests stuck in Waiting (Running=0) under sustained load / CPU offload",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/42371",
+        "created": "2026-05-12T03:32:29Z",
+        "updated": "2026-07-15T03:55:48Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 44785,
+        "title": "[Model] Add LLaVA-OneVision-2 (LlavaOnevision2ForConditionalGeneration)",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/44785",
+        "created": "2026-06-07T11:38:46Z",
+        "updated": "2026-07-02T09:10:34Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "new-model",
+          "ready",
+          "v1",
+          "multi-modality"
+        ]
+      },
+      {
+        "number": 18431,
+        "title": "[Bug]: Engine stuck with requests are blocked, running/waiting request count and KV cache usage remain constant.",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/18431",
+        "created": "2025-05-20T18:13:13Z",
+        "updated": "2026-06-22T16:51:43Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "stale"
+        ]
+      },
+      {
+        "number": 45388,
+        "title": "[Bug]: Scheduler permanently deadlocks under KV-cache pressure when a KV-offloading connector is enabled",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/45388",
+        "created": "2026-06-12T08:23:56Z",
+        "updated": "2026-06-13T07:06:31Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"EngineCore\" \"idle\"": {
+    "total": 190,
+    "items": [
+      {
+        "number": 51052,
+        "title": "[KVConnector][MoRIIO] Transfer hybrid mamba/KDA recurrent state in READ mode",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/51052",
+        "created": "2026-08-04T16:05:28Z",
+        "updated": "2026-09-19T18:04:40Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "rocm",
+          "kv-connector",
+          "kimi",
+          "k3",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 53899,
+        "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53899",
+        "created": "2026-08-26T13:12:08Z",
+        "updated": "2026-09-19T09:21:16Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "qwen",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "kimi",
+          "k3",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 56868,
+        "title": "[Bug]: GLM-5.3-Flash long-decode degeneration after accumulated reasoning decode",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/56868",
+        "created": "2026-09-14T16:50:06Z",
+        "updated": "2026-09-19T02:26:26Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "tool-calling",
+          "quantization",
+          "glm"
+        ]
+      },
+      {
+        "number": 51360,
+        "title": "[Frontend] Add reusable TP1 initialized-engine snapshots",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/51360",
+        "created": "2026-08-07T05:06:49Z",
+        "updated": "2026-09-19T01:50:00Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "structured-output",
+          "frontend",
+          "ready",
+          "ci/build",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "DSv4"
+        ]
+      },
+      {
+        "number": 57449,
+        "title": "[Bug]: MLA Workspace OOM At Runtime",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/57449",
+        "created": "2026-09-17T22:31:03Z",
+        "updated": "2026-09-18T22:39:36Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "quantization"
+        ]
+      },
+      {
+        "number": 54359,
+        "title": "[Bug][ROCm] GLM-5.3-Flash kpool indexer overwrites its own KV cache: backend advertises a kernel block size the kernels do not use",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/54359",
+        "created": "2026-08-29T15:15:15Z",
+        "updated": "2026-09-18T20:37:39Z",
+        "is_pr": false,
+        "labels": [
+          "rocm",
+          "glm"
+        ]
+      },
+      {
+        "number": 51506,
+        "title": "[Bugfix][Kernel] Hoist tensor-descriptor build out of unified-attention TD ti\u2026",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/51506",
+        "created": "2026-08-08T16:03:02Z",
+        "updated": "2026-09-18T13:59:12Z",
+        "is_pr": true,
+        "labels": [
+          "bug"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"output processing\" stall v1": {
+    "total": 5,
+    "items": [
+      {
+        "number": 45635,
+        "title": "[AuxOutput] Add block-keyed storage for routed-expert outputs",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/45635",
+        "created": "2026-06-15T03:48:32Z",
+        "updated": "2026-09-19T03:03:24Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "frontend",
+          "ready",
+          "ray",
+          "v1",
+          "kv-connector",
+          "mrv2",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 55700,
+        "title": "[Feat][Frontend] Add Watchdog for Engine and Worker Monitoring",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/55700",
+        "created": "2026-09-07T09:57:01Z",
+        "updated": "2026-09-18T09:38:03Z",
+        "is_pr": true,
+        "labels": [
+          "verified"
+        ]
+      },
+      {
+        "number": 49628,
+        "title": "[V1][Observability] Add opt-in diagnostics for stalled engine stages",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/49628",
+        "created": "2026-07-23T18:00:26Z",
+        "updated": "2026-09-18T01:05:42Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "v1",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 54322,
+        "title": "[Bugfix] Keep the frontend profiler on one thread, export off it",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/54322",
+        "created": "2026-08-29T07:28:33Z",
+        "updated": "2026-09-04T09:27:13Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "needs-rebase"
+        ]
+      },
+      {
+        "number": 36542,
+        "title": "Compute MM Pre-processing Timing Metrics in a Non-Blocking Way for Prod",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/36542",
+        "created": "2026-03-09T20:55:54Z",
+        "updated": "2026-03-10T08:42:49Z",
+        "is_pr": true,
+        "labels": [
+          "performance",
+          "rocm",
+          "structured-output",
+          "frontend",
+          "tpu",
+          "speculative-decoding",
+          "ci/build",
+          "v1",
+          "multi-modality",
+          "tool-calling",
+          "llama",
+          "qwen",
+          "deepseek",
+          "cpu",
+          "gpt-oss",
+          "kv-connector",
+          "nvidia",
+          "meta-exported",
+          "fb-exported"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"VLLM_OUTPUT_PROCESS\"": {
+    "total": 0,
+    "items": [],
+    "error": null
+  },
+  "repo:vllm-project/vllm output_handler deadlock OR hang OR slow": {
+    "total": 313,
+    "items": [
+      {
+        "number": 54317,
+        "title": "[Bug]: GLM-5.3-Flash (glm5next) \u2014 recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/54317",
+        "created": "2026-08-29T05:42:52Z",
+        "updated": "2026-09-19T12:46:14Z",
+        "is_pr": false,
+        "labels": [
+          "structured-output",
+          "kimi",
+          "glm"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 43222,
+        "title": "[Bug]: Possible to get GPU OOM for DP/EP",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/43222",
+        "created": "2026-05-20T14:51:36Z",
+        "updated": "2026-09-19T01:42:43Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "stale"
+        ]
+      },
+      {
+        "number": 50011,
+        "title": "[Bug]: Sleep mode wake_up crashes EngineCore natively on DGX Spark (GB10, unified memory) \u2014 sleep level 1 works, wake kills the engine",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/50011",
+        "created": "2026-07-27T16:22:36Z",
+        "updated": "2026-09-18T21:12:10Z",
+        "is_pr": false,
+        "labels": [
+          "quantization"
+        ]
+      },
+      {
+        "number": 52234,
+        "title": "[Bug]: NIXL HMA receive failures can return HTTP 200 with corrupted tokens",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/52234",
+        "created": "2026-08-14T01:16:43Z",
+        "updated": "2026-09-18T05:54:31Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 30142,
+        "title": "[Bug]: `assert request.num_output_placeholders >= 0` can fail in async scheduling",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/30142",
+        "created": "2025-12-05T15:47:31Z",
+        "updated": "2026-09-18T01:44:34Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "stale"
+        ]
+      },
+      {
+        "number": 54237,
+        "title": "[Bug]: 0.28.0 and 0.29.0 consume all host memory at start and freeze (OK with 0.27.1)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/54237",
+        "created": "2026-08-28T17:00:55Z",
+        "updated": "2026-09-17T02:16:48Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "quantization"
+        ]
+      },
+      {
+        "number": 40987,
+        "title": "[Bug][DeepSeek-V4][MTP] deep_gemm assertion: context_lens.is_contiguous() in paged MQA metadata",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/40987",
+        "created": "2026-04-27T08:46:45Z",
+        "updated": "2026-09-17T01:48:01Z",
+        "is_pr": false,
+        "labels": [
+          "stale",
+          "DSv4"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"shared memory broadcast\"": {
+    "total": 216,
+    "items": [
+      {
+        "number": 57635,
+        "title": "[Bugfix] Persist FlashInfer autotune cache per rank to fix the rank-0-only cache-hit deadlock",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/57635",
+        "created": "2026-09-18T21:26:58Z",
+        "updated": "2026-09-19T20:08:34Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "nvidia"
+        ]
+      },
+      {
+        "number": 55763,
+        "title": "[Bugfix][KV Connector] Retry Mooncake bootstrap registration on timeout",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/55763",
+        "created": "2026-09-07T17:54:52Z",
+        "updated": "2026-09-19T19:35:34Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "documentation",
+          "ready",
+          "kv-connector"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 57423,
+        "title": "[Bug]: FlashInfer autotune config cache hits only on rank 0, deadlocking the engine launch",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/57423",
+        "created": "2026-09-17T17:57:55Z",
+        "updated": "2026-09-19T03:45:24Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "quantization"
+        ]
+      },
+      {
+        "number": 44185,
+        "title": "[Bug]: vLLM hangs during speculative decoding with MoE draft model near max_model_len under Data Parallelism (DP)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/44185",
+        "created": "2026-06-01T09:29:44Z",
+        "updated": "2026-09-19T01:41:48Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "unstale"
+        ]
+      },
+      {
+        "number": 45800,
+        "title": "[Bug]: MiniMax-M3-MXFP8 hangs on FlashInfer MNNVL all-reduce (torch symmetric_memory rendezvous) during CUDA graph capture on 2-node TP=8 non-MNNVL setup; fuse_allreduce_rms=False does not help",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/45800",
+        "created": "2026-06-16T09:05:01Z",
+        "updated": "2026-09-19T01:40:22Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "stale"
+        ]
+      },
+      {
+        "number": 42742,
+        "title": "[Bug]: Silent worker termination after long idle on dual-node `--no-ray` setup (likely `TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC` SIGABRT)",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/42742",
+        "created": "2026-05-15T13:38:20Z",
+        "updated": "2026-09-18T01:42:00Z",
+        "is_pr": false,
+        "labels": [
+          "stale"
+        ]
+      },
+      {
+        "number": 52917,
+        "title": "[Core][Hardware][Arm] (All GPUs) Adaptive spin grace + bounded arch waits (aarch64 WFET, x86 WAITPKG) for shm_broadcast",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/52917",
+        "created": "2026-08-19T09:11:57Z",
+        "updated": "2026-09-17T22:58:49Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "intel-gpu",
+          "needs-rebase"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"shm_broadcast\"": {
+    "total": 84,
+    "items": [
+      {
+        "number": 53899,
+        "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53899",
+        "created": "2026-08-26T13:12:08Z",
+        "updated": "2026-09-19T09:21:16Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "qwen",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "kimi",
+          "k3",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 55844,
+        "title": "[Core][Frontend] Bind KV-event publishers at port 0 and expose the bound endpoints",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/55844",
+        "created": "2026-09-08T06:58:30Z",
+        "updated": "2026-09-19T01:11:06Z",
+        "is_pr": true,
+        "labels": [
+          "frontend",
+          "ready",
+          "rust"
+        ]
+      },
+      {
+        "number": 55700,
+        "title": "[Feat][Frontend] Add Watchdog for Engine and Worker Monitoring",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/55700",
+        "created": "2026-09-07T09:57:01Z",
+        "updated": "2026-09-18T09:38:03Z",
+        "is_pr": true,
+        "labels": [
+          "verified"
+        ]
+      },
+      {
+        "number": 51275,
+        "title": "[RFC]: Race-free port management: pick ports at bind time, publish over an existing channel",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/51275",
+        "created": "2026-08-06T15:17:09Z",
+        "updated": "2026-09-18T06:39:49Z",
+        "is_pr": false,
+        "labels": [
+          "RFC"
+        ]
+      },
+      {
+        "number": 55575,
+        "title": "[Performance][Model] DeepSeek-V4: reuse fused post residual for aux hidden states",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/55575",
+        "created": "2026-09-06T14:17:57Z",
+        "updated": "2026-09-17T23:49:19Z",
+        "is_pr": true,
+        "labels": [
+          "needs-rebase",
+          "deepseek",
+          "mrv2",
+          "DSv4",
+          "dflash"
+        ]
+      },
+      {
+        "number": 52917,
+        "title": "[Core][Hardware][Arm] (All GPUs) Adaptive spin grace + bounded arch waits (aarch64 WFET, x86 WAITPKG) for shm_broadcast",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/52917",
+        "created": "2026-08-19T09:11:57Z",
+        "updated": "2026-09-17T22:58:49Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "intel-gpu",
+          "needs-rebase"
+        ]
+      },
+      {
+        "number": 54406,
+        "title": "[Core] Pack execute_model SchedulerOutput for multiproc RPC",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/54406",
+        "created": "2026-08-30T08:30:01Z",
+        "updated": "2026-09-17T05:10:39Z",
+        "is_pr": true,
+        "labels": [
+          "performance",
+          "scheduler"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm zmq \"message lost\" OR \"request lost\" OR dropped": {
+    "total": 651,
+    "items": [
+      {
+        "number": 55763,
+        "title": "[Bugfix][KV Connector] Retry Mooncake bootstrap registration on timeout",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/55763",
+        "created": "2026-09-07T17:54:52Z",
+        "updated": "2026-09-19T19:35:34Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "documentation",
+          "ready",
+          "kv-connector"
+        ]
+      },
+      {
+        "number": 53899,
+        "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53899",
+        "created": "2026-08-26T13:12:08Z",
+        "updated": "2026-09-19T09:21:16Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "qwen",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "kimi",
+          "k3",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 54176,
+        "title": "[Feature][EPD] Support dynamic EPD (EC-connector) proxy",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/54176",
+        "created": "2026-08-28T07:50:27Z",
+        "updated": "2026-09-19T06:29:13Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "frontend",
+          "kv-connector",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 55707,
+        "title": "[Feature][Core][Frontend] Add ephemeral KV event endpoint discovery",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/55707",
+        "created": "2026-09-07T10:02:48Z",
+        "updated": "2026-09-19T04:54:33Z",
+        "is_pr": true,
+        "labels": [
+          "frontend",
+          "needs-rebase"
+        ]
+      },
+      {
+        "number": 46121,
+        "title": "[Performance]: Add a model-free microbenchmark for the frontend <-> EngineCore IPC path",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/46121",
+        "created": "2026-06-19T02:06:30Z",
+        "updated": "2026-09-19T01:39:59Z",
+        "is_pr": false,
+        "labels": [
+          "stale"
+        ]
+      },
+      {
+        "number": 55679,
+        "title": "[Feature]: KV cache events \u2014 bind-time ephemeral port allocation and a discovery API",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/55679",
+        "created": "2026-09-07T07:59:26Z",
+        "updated": "2026-09-19T01:11:07Z",
+        "is_pr": false,
+        "labels": [
+          "feature request"
+        ]
+      },
+      {
+        "number": 55844,
+        "title": "[Core][Frontend] Bind KV-event publishers at port 0 and expose the bound endpoints",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/55844",
+        "created": "2026-09-08T06:58:30Z",
+        "updated": "2026-09-19T01:11:06Z",
+        "is_pr": true,
+        "labels": [
+          "frontend",
+          "ready",
+          "rust"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm completions arrive in waves OR burst concurrency": {
+    "total": 58,
+    "items": [
+      {
+        "number": 57705,
+        "title": "[Bugfix][KVConnector] Fix MoRI-IO WRITE-mode requests stranded in WAITING_FOR_REMOTE_KVS",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/57705",
+        "created": "2026-09-19T17:20:47Z",
+        "updated": "2026-09-19T20:54:28Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "documentation",
+          "kv-connector"
+        ]
+      },
+      {
+        "number": 55279,
+        "title": "[Bug]: DFlash2 (dflash method) deterministic cumulative OOB \u2014 engine dies with CUDA IMA / Xid 31 after ~11k decode steps under sampling load (sm_80, v0.27.1)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/55279",
+        "created": "2026-09-04T04:03:38Z",
+        "updated": "2026-09-19T13:17:43Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 57491,
+        "title": "[ROCm][DSv4.1] Keep the Engram tables in host memory on ROCm",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/57491",
+        "created": "2026-09-18T04:43:22Z",
+        "updated": "2026-09-18T19:39:43Z",
+        "is_pr": true,
+        "labels": [
+          "rocm",
+          "ready",
+          "deepseek",
+          "DSv4.1"
+        ]
+      },
+      {
+        "number": 50045,
+        "title": "[KV Offloading] Back-pressure detection and remediation",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/50045",
+        "created": "2026-07-27T20:52:55Z",
+        "updated": "2026-09-18T18:47:49Z",
+        "is_pr": true,
+        "labels": [
+          "ready",
+          "v1",
+          "kv-connector"
+        ]
+      },
+      {
+        "number": 57431,
+        "title": "[Model][DCP] Decode context parallelism for Qwen4Exp QSA",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/57431",
+        "created": "2026-09-17T19:03:30Z",
+        "updated": "2026-09-18T16:36:25Z",
+        "is_pr": true,
+        "labels": [
+          "qwen",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 50252,
+        "title": "[Bugfix][Gemma4] Map stacked expert LoRA tensors onto the MoE parent module",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/50252",
+        "created": "2026-07-29T11:09:53Z",
+        "updated": "2026-09-18T13:11:03Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "needs-rebase"
+        ]
+      },
+      {
+        "number": 57519,
+        "title": "[Bugfix][Benchmark] Fail streams that end in a server error event",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/57519",
+        "created": "2026-09-18T07:26:23Z",
+        "updated": "2026-09-18T07:27:04Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "performance"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm throughput cliff concurrency scheduler": {
+    "total": 12,
+    "items": [
+      {
+        "number": 46329,
+        "title": "[Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/46329",
+        "created": "2026-06-22T02:19:37Z",
+        "updated": "2026-09-19T16:16:40Z",
+        "is_pr": true,
+        "labels": [
+          "v1",
+          "nvidia",
+          "quantization"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 38256,
+        "title": "[RFC]: Incremental MoE Expert Offloading \u2014 GPU Cache + Async Pipeline",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/38256",
+        "created": "2026-03-26T16:17:31Z",
+        "updated": "2026-09-18T00:56:00Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 37754,
+        "title": "[Bug] FlashInfer + MTP speculative decoding crashes on SM121 (DGX Spark) with GQA=16 model",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/37754",
+        "created": "2026-03-21T17:44:13Z",
+        "updated": "2026-09-14T23:36:48Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 49011,
+        "title": "[Feature]: nvfp4 KV cache on SM120 \u2014 flashinfer ships the kernels, vLLM isn't wired to them (working prototype, 245K ctx on a 5090)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/49011",
+        "created": "2026-07-18T04:23:27Z",
+        "updated": "2026-09-07T06:46:39Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 42948,
+        "title": "[Bug]: Prefix-cache 0% hit on re-sent request \u2014 DeepSeek-V4-Flash hybrid groups lose all first-block cache keys on every request reassignment (DSv4 variant of #32802)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/42948",
+        "created": "2026-05-18T08:25:28Z",
+        "updated": "2026-08-27T08:38:39Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 52109,
+        "title": "[Bug][ROCm/gfx942]: DeepSeek-V4-Flash silent retrieval corruption for prompts \u2265 ~4-5k tokens (AITER sparse indexer)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/52109",
+        "created": "2026-08-13T06:42:20Z",
+        "updated": "2026-08-27T08:20:11Z",
+        "is_pr": false,
+        "labels": [
+          "rocm"
+        ]
+      },
+      {
+        "number": 41663,
+        "title": "[Bug]: XPU TP=2 on dual Intel Arc Pro B70 (Battlemage): GP fault + xe BCS engine reset reproduces in intel/vllm:0.17.0-xpu on Ubuntu 24.04 HWE 6.17",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/41663",
+        "created": "2026-05-04T20:52:26Z",
+        "updated": "2026-08-05T08:07:54Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "intel-gpu"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm GDN hybrid concurrency stall OR slow OR freeze": {
+    "total": 228,
+    "items": [
+      {
+        "number": 46329,
+        "title": "[Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/46329",
+        "created": "2026-06-22T02:19:37Z",
+        "updated": "2026-09-19T16:16:40Z",
+        "is_pr": true,
+        "labels": [
+          "v1",
+          "nvidia",
+          "quantization"
+        ]
+      },
+      {
+        "number": 54317,
+        "title": "[Bug]: GLM-5.3-Flash (glm5next) \u2014 recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/54317",
+        "created": "2026-08-29T05:42:52Z",
+        "updated": "2026-09-19T12:46:14Z",
+        "is_pr": false,
+        "labels": [
+          "structured-output",
+          "kimi",
+          "glm"
+        ]
+      },
+      {
+        "number": 57680,
+        "title": "[Bug]: Decode throughput drops ~3.3x from 0.26.0 to 0.29.0 on H100 (Qwen3.6-35B-A3B-FP8, same config, same backends)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/57680",
+        "created": "2026-09-19T09:01:17Z",
+        "updated": "2026-09-19T11:14:08Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 53899,
+        "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53899",
+        "created": "2026-08-26T13:12:08Z",
+        "updated": "2026-09-19T09:21:16Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "qwen",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "kimi",
+          "k3",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 53726,
+        "title": "Silent CUDA IMA (exit 0) in hybrid GDN + MTP k=3 + async scheduling on RTX 3090; persists through #50021/#45100/#53613-class fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/53726",
+        "created": "2026-08-25T13:18:10Z",
+        "updated": "2026-09-18T23:22:57Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 52988,
+        "title": "[Spec decode] Support variable-length decode for Kimi-K3 adaptive ver",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/52988",
+        "created": "2026-08-19T18:00:52Z",
+        "updated": "2026-09-18T16:59:24Z",
+        "is_pr": true,
+        "labels": [
+          "rocm",
+          "ready",
+          "nvidia",
+          "mrv2",
+          "dflash",
+          "kimi",
+          "k3"
+        ]
+      },
+      {
+        "number": 57562,
+        "title": "[Bug]: AsyncScheduler num_output_placeholders underflow with chunked prefill + concurrency (no spec decode, no preemption) \u2014 regression from 0.24.0",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/57562",
+        "created": "2026-09-18T12:26:51Z",
+        "updated": "2026-09-18T13:00:04Z",
+        "is_pr": false,
+        "labels": []
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"linear attention\" concurrent throughput degradation": {
+    "total": 23,
+    "items": [
+      {
+        "number": 46329,
+        "title": "[Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/46329",
+        "created": "2026-06-22T02:19:37Z",
+        "updated": "2026-09-19T16:16:40Z",
+        "is_pr": true,
+        "labels": [
+          "v1",
+          "nvidia",
+          "quantization"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 37429,
+        "title": " [Bugfix] Fix KV cache sizing and allocation for hybrid Mamba/attention models",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/37429",
+        "created": "2026-03-18T12:49:09Z",
+        "updated": "2026-09-05T01:51:16Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "needs-rebase",
+          "stale",
+          "v1"
+        ]
+      },
+      {
+        "number": 40926,
+        "title": "[Bug]: V1 engine + MTP + GLM-5.1 (DSA + MoE + MLA) \u2014 workers hang under sustained traffic, sample_tokens RPC timeout, EngineDeadError",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/40926",
+        "created": "2026-04-26T15:17:40Z",
+        "updated": "2026-09-04T21:21:04Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 53334,
+        "title": "TurboQuant KV cache: two observations from an sm121 evaluation: hybrid-model init failure; fp16 zero-point overflow on large value outliers",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/53334",
+        "created": "2026-08-22T00:13:19Z",
+        "updated": "2026-09-01T02:03:56Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 50682,
+        "title": "[ROCm][AMD] Kimi-K3 Gap and Roadmap Tracking",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/50682",
+        "created": "2026-08-01T12:39:29Z",
+        "updated": "2026-08-24T15:17:48Z",
+        "is_pr": false,
+        "labels": [
+          "rocm",
+          "kimi",
+          "k3"
+        ]
+      },
+      {
+        "number": 38182,
+        "title": "[Bug]: Based on Qwen3.5-35B-A3B, why does enabling MTP speculative decoding actually reduce the prefix cache hit rate?",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/38182",
+        "created": "2026-03-26T03:32:18Z",
+        "updated": "2026-08-20T15:48:25Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 40880,
+        "title": "[Bug]: MTP \u00d7 TurboQuant \u00d7 CUDA graph capture produces degenerate output on Qwen3-Next hybrid (not closed by v7.13 ngram fix tree)",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/40880",
+        "created": "2026-04-25T16:20:43Z",
+        "updated": "2026-08-20T05:45:39Z",
+        "is_pr": false,
+        "labels": []
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm blocking EngineCore event loop": {
+    "total": 107,
+    "items": [
+      {
+        "number": 53934,
+        "title": "[Elastic EP] Support Model Runner V2",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53934",
+        "created": "2026-08-26T18:44:29Z",
+        "updated": "2026-09-19T19:56:31Z",
+        "is_pr": true,
+        "labels": [
+          "needs-rebase",
+          "nvidia",
+          "mrv2",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 54317,
+        "title": "[Bug]: GLM-5.3-Flash (glm5next) \u2014 recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/54317",
+        "created": "2026-08-29T05:42:52Z",
+        "updated": "2026-09-19T12:46:14Z",
+        "is_pr": false,
+        "labels": [
+          "structured-output",
+          "kimi",
+          "glm"
+        ]
+      },
+      {
+        "number": 53899,
+        "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53899",
+        "created": "2026-08-26T13:12:08Z",
+        "updated": "2026-09-19T09:21:16Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "qwen",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "kimi",
+          "k3",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 51360,
+        "title": "[Frontend] Add reusable TP1 initialized-engine snapshots",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/51360",
+        "created": "2026-08-07T05:06:49Z",
+        "updated": "2026-09-19T01:50:00Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "structured-output",
+          "frontend",
+          "ready",
+          "ci/build",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "DSv4"
+        ]
+      },
+      {
+        "number": 51433,
+        "title": "[Engine Core] Gather engine notifications from workers to frontends",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/51433",
+        "created": "2026-08-07T18:56:41Z",
+        "updated": "2026-09-18T17:51:29Z",
+        "is_pr": true,
+        "labels": [
+          "ready",
+          "mrv2",
+          "rust"
+        ]
+      },
+      {
+        "number": 55700,
+        "title": "[Feat][Frontend] Add Watchdog for Engine and Worker Monitoring",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/55700",
+        "created": "2026-09-07T09:57:01Z",
+        "updated": "2026-09-18T09:38:03Z",
+        "is_pr": true,
+        "labels": [
+          "verified"
+        ]
+      },
+      {
+        "number": 56874,
+        "title": "[KVConnector][NIXL] Opt-in per-layer overlapped WRITE-push for disaggregated KV transfer",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/56874",
+        "created": "2026-09-14T17:21:34Z",
+        "updated": "2026-09-18T02:17:22Z",
+        "is_pr": true,
+        "labels": [
+          "kv-connector"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"duplicate\" prefill dp_rank": {
+    "total": 31,
+    "items": [
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 40704,
+        "title": "[ModelRunner V2] Speculative Decoding NGram GPU Implementations",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/40704",
+        "created": "2026-04-23T12:42:36Z",
+        "updated": "2026-09-19T00:32:19Z",
+        "is_pr": true,
+        "labels": [
+          "speculative-decoding",
+          "ready",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "mrv2"
+        ]
+      },
+      {
+        "number": 51581,
+        "title": "[Bug][Spec Decode]: DFlash fused-KV projection calls F.linear on a sliced qkv_proj weight \u2014 breaks (and can silently corrupt) any weight-quantized drafter",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/51581",
+        "created": "2026-08-09T21:32:59Z",
+        "updated": "2026-09-15T01:11:24Z",
+        "is_pr": false,
+        "labels": [
+          "quantization"
+        ]
+      },
+      {
+        "number": 38476,
+        "title": "[Feature] TRITON_MLA_SPARSE backend for SM8x/11x/12x DSA Sparse MLA Support",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/38476",
+        "created": "2026-03-29T15:23:23Z",
+        "updated": "2026-09-11T15:33:32Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "rocm",
+          "intel-gpu",
+          "needs-rebase",
+          "v1",
+          "nvidia"
+        ]
+      },
+      {
+        "number": 52307,
+        "title": "[Bugfix][Ray] Strip brackets from IPv6 node IP for MessageQueue connect_ip",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/52307",
+        "created": "2026-08-14T09:43:31Z",
+        "updated": "2026-09-10T16:59:41Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "ray"
+        ]
+      },
+      {
+        "number": 55729,
+        "title": "[Bug][MooncakeConnector] Bootstrap registration timeout is fatal during slow rank-0 initialization",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/55729",
+        "created": "2026-09-07T12:05:05Z",
+        "updated": "2026-09-09T16:16:35Z",
+        "is_pr": false,
+        "labels": [
+          "quantization"
+        ]
+      },
+      {
+        "number": 55259,
+        "title": "[RFC]: Optional native startup self-benchmarking for forward-pass performance characterization",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/55259",
+        "created": "2026-09-03T23:55:14Z",
+        "updated": "2026-09-03T23:58:42Z",
+        "is_pr": false,
+        "labels": [
+          "quantization"
+        ]
+      },
+      {
+        "number": 54392,
+        "title": "[Bug]: PD-admitted Mamba request is spec-padded before prefill completes, then align split truncates the 8-token window to 5",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/54392",
+        "created": "2026-08-30T04:27:03Z",
+        "updated": "2026-09-02T08:55:47Z",
+        "is_pr": false,
+        "labels": [
+          "kimi"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm async_llm output handler slow high concurrency": {
+    "total": 1,
+    "items": [
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"12 concurrent\"": {
+    "total": 580,
+    "items": [
+      {
+        "number": 57197,
+        "title": "[Bugfix][PP][Spec Decode] Complete pipeline-parallel auxiliary-state and warmup support",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/57197",
+        "created": "2026-09-16T15:43:43Z",
+        "updated": "2026-09-19T19:07:52Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "needs-rebase",
+          "nvidia",
+          "minimax"
+        ]
+      },
+      {
+        "number": 49249,
+        "title": "[Bugfix] glm47 parser: tolerate missing opening <arg_value> tag",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/49249",
+        "created": "2026-07-20T22:15:10Z",
+        "updated": "2026-09-19T18:24:47Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "tool-calling",
+          "glm"
+        ]
+      },
+      {
+        "number": 55279,
+        "title": "[Bug]: DFlash2 (dflash method) deterministic cumulative OOB \u2014 engine dies with CUDA IMA / Xid 31 after ~11k decode steps under sampling load (sm_80, v0.27.1)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/55279",
+        "created": "2026-09-04T04:03:38Z",
+        "updated": "2026-09-19T13:17:43Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 57680,
+        "title": "[Bug]: Decode throughput drops ~3.3x from 0.26.0 to 0.29.0 on H100 (Qwen3.6-35B-A3B-FP8, same config, same backends)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/57680",
+        "created": "2026-09-19T09:01:17Z",
+        "updated": "2026-09-19T11:14:08Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 53899,
+        "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53899",
+        "created": "2026-08-26T13:12:08Z",
+        "updated": "2026-09-19T09:21:16Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "qwen",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "kimi",
+          "k3",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 35492,
+        "title": "feat(responses): add WebSocket mode for Responses API",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/35492",
+        "created": "2026-02-27T07:42:50Z",
+        "updated": "2026-09-19T04:20:26Z",
+        "is_pr": true,
+        "labels": [
+          "frontend",
+          "unstale"
+        ]
+      },
+      {
+        "number": 42895,
+        "title": "[Bug]: NIXL disagg fails for Qwen3.5 hybrid model when prefill TP4 and decode DP8 use different physical block sizes",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/42895",
+        "created": "2026-05-17T19:17:33Z",
+        "updated": "2026-09-19T01:43:20Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "stale"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm scheduler does not run full batch concurrency": {
+    "total": 439,
+    "items": [
+      {
+        "number": 57250,
+        "title": "[Core] structured generation mode for DiffusionGemma model (Jev-like)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/57250",
+        "created": "2026-09-16T22:39:13Z",
+        "updated": "2026-09-19T21:20:24Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "speculative-decoding",
+          "ready",
+          "needs-rebase",
+          "mrv2",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 52677,
+        "title": "[Reasoning] Break repeating reasoning loops by forcing the reasoning end sequence",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/52677",
+        "created": "2026-08-18T02:11:19Z",
+        "updated": "2026-09-19T20:21:15Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "frontend",
+          "needs-rebase",
+          "mrv2",
+          "mrv1-only"
+        ]
+      },
+      {
+        "number": 48944,
+        "title": "[Spec Decode] Context-length-aware K in DSD (RFC #48627): extend num_speculative_tokens_per_batch_size with a ctx axis",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/48944",
+        "created": "2026-07-17T11:40:09Z",
+        "updated": "2026-09-19T19:07:45Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "speculative-decoding",
+          "torch.compile",
+          "v1",
+          "nvidia",
+          "mrv2",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 54442,
+        "title": "[Bugfix] Don't let a structured-output request sample from an unmasked row",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/54442",
+        "created": "2026-08-30T15:01:25Z",
+        "updated": "2026-09-19T18:38:10Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "speculative-decoding",
+          "needs-rebase",
+          "mrv2",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 51052,
+        "title": "[KVConnector][MoRIIO] Transfer hybrid mamba/KDA recurrent state in READ mode",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/51052",
+        "created": "2026-08-04T16:05:28Z",
+        "updated": "2026-09-19T18:04:40Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "rocm",
+          "kv-connector",
+          "kimi",
+          "k3",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 46329,
+        "title": "[Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/46329",
+        "created": "2026-06-22T02:19:37Z",
+        "updated": "2026-09-19T16:16:40Z",
+        "is_pr": true,
+        "labels": [
+          "v1",
+          "nvidia",
+          "quantization"
+        ]
+      },
+      {
+        "number": 55279,
+        "title": "[Bug]: DFlash2 (dflash method) deterministic cumulative OOB \u2014 engine dies with CUDA IMA / Xid 31 after ~11k decode steps under sampling load (sm_80, v0.27.1)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/55279",
+        "created": "2026-09-04T04:03:38Z",
+        "updated": "2026-09-19T13:17:43Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 53899,
+        "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53899",
+        "created": "2026-08-26T13:12:08Z",
+        "updated": "2026-09-19T09:21:16Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "qwen",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "kimi",
+          "k3",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm chunked preemption throughput collapse": {
+    "total": 24,
+    "items": [
+      {
+        "number": 46329,
+        "title": "[Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/46329",
+        "created": "2026-06-22T02:19:37Z",
+        "updated": "2026-09-19T16:16:40Z",
+        "is_pr": true,
+        "labels": [
+          "v1",
+          "nvidia",
+          "quantization"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 53726,
+        "title": "Silent CUDA IMA (exit 0) in hybrid GDN + MTP k=3 + async scheduling on RTX 3090; persists through #50021/#45100/#53613-class fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/53726",
+        "created": "2026-08-25T13:18:10Z",
+        "updated": "2026-09-18T23:22:57Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 38256,
+        "title": "[RFC]: Incremental MoE Expert Offloading \u2014 GPU Cache + Async Pipeline",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/38256",
+        "created": "2026-03-26T16:17:31Z",
+        "updated": "2026-09-18T00:56:00Z",
+        "is_pr": false,
+        "labels": []
+      },
+      {
+        "number": 54705,
+        "title": "[Feature][Model][Kernel] Inkling: fp8 e4m3 KV cache with per-tensor scales on SM100",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/54705",
+        "created": "2026-09-01T05:41:26Z",
+        "updated": "2026-09-17T16:19:53Z",
+        "is_pr": true,
+        "labels": [
+          "inkling"
+        ]
+      },
+      {
+        "number": 53480,
+        "title": "[Bug][XPU]: Silent persistent output corruption (endless \"!\" / token 0) under sustained concurrent decode on Arc Pro B70, W4A16 27B head_dim 256",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/53480",
+        "created": "2026-08-23T21:47:33Z",
+        "updated": "2026-09-15T15:53:28Z",
+        "is_pr": false,
+        "labels": [
+          "intel-gpu"
+        ]
+      },
+      {
+        "number": 56815,
+        "title": "[Bug]: Silent ctx-load decode flake on single-GPU Qwen4Exp PLE CPU-offload \u2014 nightly range eed1f3d0\u2192dc36fcce (#56512 ruled out)",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/56815",
+        "created": "2026-09-14T10:51:13Z",
+        "updated": "2026-09-15T09:27:44Z",
+        "is_pr": false,
+        "labels": [
+          "bug",
+          "quantization"
+        ]
+      },
+      {
+        "number": 50576,
+        "title": "[Feature]: SM8x (Ampere A100/A800) support for DeepSeek-V4-Flash / DeepSeek-V4-Flash-0731 DSpark",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/50576",
+        "created": "2026-07-31T14:42:04Z",
+        "updated": "2026-09-12T19:33:47Z",
+        "is_pr": false,
+        "labels": []
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm \"KV cache\" groups hybrid preemption": {
+    "total": 62,
+    "items": [
+      {
+        "number": 53298,
+        "title": "[Bugfix][KV Connector] Restore state after KV load rejection",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/53298",
+        "created": "2026-08-21T17:03:19Z",
+        "updated": "2026-09-19T18:27:13Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "needs-rebase",
+          "kv-connector",
+          "mrv2",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 46329,
+        "title": "[Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/46329",
+        "created": "2026-06-22T02:19:37Z",
+        "updated": "2026-09-19T16:16:40Z",
+        "is_pr": true,
+        "labels": [
+          "v1",
+          "nvidia",
+          "quantization"
+        ]
+      },
+      {
+        "number": 54317,
+        "title": "[Bug]: GLM-5.3-Flash (glm5next) \u2014 recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/54317",
+        "created": "2026-08-29T05:42:52Z",
+        "updated": "2026-09-19T12:46:14Z",
+        "is_pr": false,
+        "labels": [
+          "structured-output",
+          "kimi",
+          "glm"
+        ]
+      },
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 56983,
+        "title": "[Spec Decode][Model] Support DFlash2 draft models with GLM-5.3-Flash",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/56983",
+        "created": "2026-09-15T09:11:35Z",
+        "updated": "2026-09-19T05:15:44Z",
+        "is_pr": true,
+        "labels": [
+          "dflash",
+          "kv-cache-manager",
+          "glm"
+        ]
+      },
+      {
+        "number": 57103,
+        "title": "[RFC]: Programmable KV Cache: Composable Policies for Agentic Serving",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/57103",
+        "created": "2026-09-16T03:03:14Z",
+        "updated": "2026-09-18T17:49:29Z",
+        "is_pr": false,
+        "labels": [
+          "RFC",
+          "kimi"
+        ]
+      },
+      {
+        "number": 54076,
+        "title": "[Bugfix][V1] Use the Mamba cache group's block size for align-mode chunk splitting",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/54076",
+        "created": "2026-08-27T16:49:48Z",
+        "updated": "2026-09-18T12:35:04Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 57187,
+        "title": "[RFC]: Scheduler-Aware Multi-Tier KV Caching for vLLM with MORI-UMBP",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/57187",
+        "created": "2026-09-16T14:17:58Z",
+        "updated": "2026-09-18T09:51:21Z",
+        "is_pr": false,
+        "labels": [
+          "rocm",
+          "kv-connector",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      }
+    ],
+    "error": null
+  },
+  "repo:vllm-project/vllm EngineCore stuck input queue": {
+    "total": 39,
+    "items": [
+      {
+        "number": 41834,
+        "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/41834",
+        "created": "2026-05-06T15:17:15Z",
+        "updated": "2026-09-19T05:54:51Z",
+        "is_pr": true,
+        "labels": [
+          "new-model",
+          "structured-output",
+          "frontend",
+          "speculative-decoding",
+          "torch.compile",
+          "needs-rebase",
+          "ci/build",
+          "v1",
+          "tool-calling",
+          "deepseek",
+          "kv-connector",
+          "nvidia",
+          "quantization",
+          "mrv2",
+          "DSv4",
+          "dflash",
+          "scheduler",
+          "kv-cache-manager"
+        ]
+      },
+      {
+        "number": 49238,
+        "title": "[Bug]: Decode instance segfaults on NIXL `loadRemoteMD` after prefill pod restarts in P/D disaggregation",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/49238",
+        "created": "2026-07-20T20:42:22Z",
+        "updated": "2026-09-18T05:57:34Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 49628,
+        "title": "[V1][Observability] Add opt-in diagnostics for stalled engine stages",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/49628",
+        "created": "2026-07-23T18:00:26Z",
+        "updated": "2026-09-18T01:05:42Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "v1",
+          "scheduler"
+        ]
+      },
+      {
+        "number": 56696,
+        "title": "[Bug]: --otlp-traces-endpoint initializes tracer but never sends spans (instrument_otel/manual_instrument_otel never invoked)",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/issues/56696",
+        "created": "2026-09-13T12:15:50Z",
+        "updated": "2026-09-15T02:43:00Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 36130,
+        "title": "[Feature][BugFix] Add opt-in request watchdog to abort stuck requests",
+        "state": "closed",
+        "url": "https://github.com/vllm-project/vllm/pull/36130",
+        "created": "2026-03-05T11:35:24Z",
+        "updated": "2026-09-14T01:52:29Z",
+        "is_pr": true,
+        "labels": [
+          "bug",
+          "ready",
+          "stale",
+          "v1"
+        ]
+      },
+      {
+        "number": 17676,
+        "title": "[Bug]: vLLM hangs forever on waiting engine process to start",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/17676",
+        "created": "2025-05-05T20:46:10Z",
+        "updated": "2026-09-13T23:17:04Z",
+        "is_pr": false,
+        "labels": [
+          "bug"
+        ]
+      },
+      {
+        "number": 38476,
+        "title": "[Feature] TRITON_MLA_SPARSE backend for SM8x/11x/12x DSA Sparse MLA Support",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/pull/38476",
+        "created": "2026-03-29T15:23:23Z",
+        "updated": "2026-09-11T15:33:32Z",
+        "is_pr": true,
+        "labels": [
+          "documentation",
+          "rocm",
+          "intel-gpu",
+          "needs-rebase",
+          "v1",
+          "nvidia"
+        ]
+      },
+      {
+        "number": 40926,
+        "title": "[Bug]: V1 engine + MTP + GLM-5.1 (DSA + MoE + MLA) \u2014 workers hang under sustained traffic, sample_tokens RPC timeout, EngineDeadError",
+        "state": "open",
+        "url": "https://github.com/vllm-project/vllm/issues/40926",
+        "created": "2026-04-26T15:17:40Z",
+        "updated": "2026-09-04T21:21:04Z",
+        "is_pr": false,
+        "labels": []
+      }
+    ],
+    "error": null
+  }
+}

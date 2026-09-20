@@ -1,0 +1,1086 @@
+{
+  "cmt_55533": [
+    {
+      "user": "ArjunPakhan",
+      "created": "2026-09-06T09:43:06Z",
+      "body": "Hi @jsn1993! Thanks for the detailed diagnostic trace and layer-scaling comparison between the 9B and 27B hybrid checkpoints. \n\nI'm picking this up. I'll inspect `vllm/v1/core/sched/scheduler.py` to check how the mamba/GDN cache budget and per-sequence draft token slots ($1 + k$) are being accounted for during speculative decode scheduling."
+    },
+    {
+      "user": "khushali9",
+      "created": "2026-09-06T23:38:52Z",
+      "body": "@jsn1993 — to confirm the mechanism I think is behind this, I have added logs to my PR, can you run this and give the logs.\n\nMTP reserves an extra mamba/GDN state block per sequence (num_speculative_blocks = num_speculative_tokens), which inflates each request's state footprint and lowers max_concurrency = num_blocks / num_blocks_per_request. On the 48-GDN-layer 27B the per-request state is already large, so this halving is what drops the effective batch to ~3. The 24-layer 9B has a big enough pool to absorb it. This log confirms or kills that.\n\nPlease run it twice with your usual 8×256 repro and paste the [diag55533] lines from each:\n\nRun A — MTP on: your existing config (speculative_config={\"method\": \"mtp\", \"num_speculative_tokens\": 1}).\nRun B — control, MTP off: identical config but with the speculative_config line removed entirely.\nThe control run is the key part — it holds everything constant except speculation, so any difference is attributable to MTP alone.\n\nWhat I am looking for:\n\nmamba_cache_mode — decides which state-size formula is live. If it prints all, my hypothesis is likely wrong (the speculative term is negligible there) and we look elsewhere; none/align keeps it in play.\nOn the Mamba* group, spec_blocks and per_req_blocks — expect spec_blocks to go 1 (Run A) → 0 (Run B), and per_req_blocks to shrink accordingly. That delta is the MTP inflation, isolated from attention.\nmax_concurrency — expect A < B. Heads up: this figure is computed at max_model_len (4608), so the absolute value won't literally be ~3 at your 256-token decode lengths — the A-vs-B ratio is the signal, not the raw number.\n\nIf the mamba group's per_req_blocks drops and max_concurrency rises when spec is off, that pins the concurrency collapse on the per-request speculative state reservation. Thanks!"
+    },
+    {
+      "user": "Raymondlol",
+      "created": "2026-09-07T03:11:38Z",
+      "body": "@jsn1993 @khushali9 @ArjunPakhan — khushali9's hypothesis matches what I see, so here is an independent check on a different box, offered as corroboration (the #55617 A/B on the affected card is still the decisive run). `MambaSpec.num_speculative_blocks = num_speculative_tokens` for every Mamba layer, and `MambaManager` (align mode) charges `1 + k` blocks per Mamba group for the request's lifetime. With the 48 GDN layers in 3 KV groups, a 256-token request needs 1 attention + 3×(1+k) Mamba blocks — 4 at k=0, 7 at k=1 — and once the pool is short the WAITING loop in `v1/core/sched/scheduler.py` breaks on `allocate_slots` returning `None`. That gives a stable window of `floor((num_gpu_blocks − 1) / 7)` requests (the −1 is the null block), zero preemptions, which is the shape of your trace. Caveat: my 48 GB box does not collapse naturally (932 / 824 blocks at k=0/1, all 8 run, MTP faster); I reproduced your trace by pinning the pool with `num_gpu_blocks_override`.\n\nvLLM `0.28.1rc1.dev451+g1970f3ed4`, RTX 6000 Ada, `RedHatAI/Qwen3.8-27B-INT4` (ships an MTP head), `enforce_eager`, `mamba_ssm_cache_dtype=bfloat16`, `max_model_len=4608`, `max_num_seqs=25`, 8 × 256 random-token prompts, greedy, 48 new tokens; concurrency read by instrumenting `Scheduler.schedule`:\n\n| k | `num_gpu_blocks` | predicted `floor((n−1)/(1+3(1+k)))` | scheduled per step |\n|---|---|---|---|\n| 1 | 22 / 28 | 3 | **3** (`num_scheduled_tokens = {2,2,2}`) |\n| 1 | 29 / 35 | 4 | 4 |\n| 1 | 36 | 5 | 5 |\n| 1 | 43 | 6 | 6 |\n| 1 | 57 | 8 | 8 |\n| 0 | 24 / 28 | 5 / 6 | 5 / 6 |\n| 2 | 24 | 2 | 2 |\n\nIf this is what's biting you, your k=1 pool should be somewhere around 22–28 blocks — `num_gpu_blocks` in the startup log, or `per_req_blocks` from #55617 (the \"Maximum concurrency\" multiplier is computed at `max_model_len`, as khushali9 noted, so compare block counts). On a 24 GB card the k=0 → k=1 shrink is mostly the MTP head (0.88 GiB bf16 on this checkpoint) coming out of the same `gpu_memory_utilization` budget, not block geometry (~11% on my box). A cheap falsifier that needs no MTP: with speculation off, pass `num_gpu_blocks_override=24` to `LLM(...)` — if bs=8 then collapses to a ~5-wide window, the cause is pool size. _AI assistance (Claude) was used for the code tracing; I ran the measurements._\n"
+    },
+    {
+      "user": "khushali9",
+      "created": "2026-09-07T17:02:17Z",
+      "body": "Thanks @Raymondlol — that's a clean independent confirmation, and the floor((num_gpu_blocks − 1) / (1 + G·(1+k))) window (with G = mamba group count) matches the {2,2,2} trace exactly. Adopting that formulation.\n\nTwo things your box surfaced that I want to fold in:\n\nTwo compounding causes on the 24 GB card, not one. The per-request +k mamba reservation is the block-geometry half; the MTP head weight (~0.88 GiB bf16) coming out of the same gpu_memory_utilization budget is the other half, shrinking num_gpu_blocks itself when spec is on. So a fix that only tightens the +k accounting won't fully recover throughput on a tight pool — the head cost remains. Worth flagging before anyone proposes a one-liner.\n\nCard-specific. Since your 48 GB box only collapses under a pinned pool, the un-pinned numbers have to come from the affected 4090.\nSo the decisive run is still @jsn1993's on-card A/B with the #55617 diag, because it reports the real mamba_cache_mode (you assumed align — worth confirming it's not none), the real group count G, and the real num_gpu_blocks. If those differ from your box, the /7 arithmetic shifts.\n\n@jsn1993 — when you run it, could you also paste the num_gpu_blocks line from both the k=1 and k=0 (spec-off) runs? That lets us separate how much of the shrink is head-weight vs block geometry, which Raymondlol's analysis depends on.\n\nYour num_gpu_blocks_override falsifier is a nice touch — I'll suggest it as the no-MTP cross-check if the on-card numbers line up."
+    },
+    {
+      "user": "ArjunPakhan",
+      "created": "2026-09-07T18:59:42Z",
+      "body": "Thanks @khushali9 and @Raymondlol for the clear mathematical breakdown and independent validation on the RTX 6000 Ada!\n\nThe breakdown between the **MTP draft head VRAM footprint (~0.88 GB)** and the **per-request Mamba block reservation $(1 + G \\cdot (1 + k))$** makes complete sense for why this hits 24 GB cards so severely.\n\nStanding by for @jsn1993's on-card `[diag55533]` output to confirm `mamba_cache_mode` and exact block metrics!"
+    },
+    {
+      "user": "khushali9",
+      "created": "2026-09-10T15:24:42Z",
+      "body": "@jsn1993 any update on the run for my logs."
+    },
+    {
+      "user": "khushali9",
+      "created": "2026-09-17T05:17:12Z",
+      "body": "@jsn1993 Any update with the log. Thanks"
+    }
+  ],
+  "cmt_53480": [
+    {
+      "user": "bryanvine",
+      "created": "2026-08-27T07:42:17Z",
+      "body": "Recurrence on the mitigation posture, 2026-08-26 17:20:04 UTC.\n\nSince 2026-08-23 ~22:00 UTC this engine has been running what I described above as the mitigation: stock `intel/vllm:latest` (0.21.1.dev17+g0a475), `--gpu-memory-utilization 0.90`, no patched-kernel bind mounts. It ran clean for roughly three days and then degenerated again in exactly the same way: a content canary that sends a fixed short prompt every 20 minutes got a reply consisting only of `!` repeated to the token cap, with `finish_reason` normal. Container health and `/v1/models` stayed green throughout, as before. The canary restarted the engine and it has been clean for the ~14h since.\n\nThe one variable that changed between the clean stretch and the recurrence: on 2026-08-24 I raised `--max-num-seqs` from 4 to 12 (and the matching gateway concurrency cap). So the corruption reproduces on an unpatched upstream build, and raising sustained concurrent decode width from 4 to 12 is the only deliberate change preceding it. That is consistent with the concurrency-dependent race hypothesis rather than anything in the quantized weights or the custom kernels, both of which were exonerated in the isolation matrix in the original report.\n\nPosture at the time of the recurrence:\n\n```\nimage                     intel/vllm:latest (0.21.1.dev17+g0a475)\n--gpu-memory-utilization  0.90\n--max-num-seqs            12\npatched kernel mounts     none\nmodel                     Qwen3.8-27B W4A16 (head_dim 256), single card, no TP\ncard                      Arc Pro B70, guest card0 (07:00.0), PCIe passthrough to a VM\n```\n\nNo driver events, no devcoredump, and no kernel log entries around the failure window; the card kept serving requests, it just served corrupted tokens. Detection still requires a content probe, since every liveness surface reports healthy.\n\nHappy to run a specific instrumented build or dump state at the next occurrence if that would help narrow it.\n"
+    },
+    {
+      "user": "bryanvine",
+      "created": "2026-08-28T07:33:45Z",
+      "body": "Two more recurrences on the mitigation posture since my 2026-08-26 report, and the interval is shortening:\n\n- 2026-08-26 17:20:04 UTC (already reported above)\n- 2026-08-27 19:10:04 UTC\n- 2026-08-28 02:20:04 UTC\n\nSame signature each time: the served model starts emitting an unbroken run of `!` for every request while the container stays healthy and `/v1/models` keeps answering 200. A 10-minute content canary catches it and restarts the engine; each restart comes back clean and serves normally (current uptime 5h, `finish_reason: stop`, coherent output on probe).\n\nUnchanged environment across all three: `intel/vllm:latest` (0.21.1.dev17+g0a475), gpu-memory-utilization 0.90, max-num-seqs 4, no custom kernel patches mounted, Qwen3.8-27B W4A16 on a single Arc card (07:00.0) inside a VM with PCIe passthrough. No driver events, no devcoredump, nothing in dmesg on the guest around any of the three timestamps.\n\nGap between events: ~72h, then ~26h, then ~7h. Load was steady across the window (roughly 300 generation requests/day), so this looks like elapsed-time or cumulative-request drift rather than a load spike. Happy to collect any specific engine state before the next restart if there is something worth dumping.\n"
+    },
+    {
+      "user": "bryanvine",
+      "created": "2026-08-28T07:37:04Z",
+      "body": "Correction to my comment above: I quoted `max-num-seqs 4`, but the running engine is `--max-num-seqs 12`. It was raised from 4 to 12 on 2026-08-24, after the mitigation cutover, and the gateway's parallelism cap was raised to match. Everything else in that comment stands (`intel/vllm:latest` 0.21.1.dev17+g0a475, `--gpu-memory-utilization 0.90`, `--max-model-len 32768`, no custom kernel patches, Qwen3.8-27B W4A16 on one Arc card via VM passthrough).\n\nThat makes the timeline more suggestive than I implied:\n\n- 2026-08-23 22:00 UTC: mitigation deployed, `max-num-seqs 4`\n- 2026-08-24: raised to 12\n- 2026-08-26 17:20, 08-27 19:10, 08-28 02:20 UTC: corruption, gaps ~72h, ~26h, ~7h\n\nSo the only fully clean stretch overlaps the period at width 4, and every recurrence has been at width 12. That is one variable change and three data points, not a controlled result, but concurrency width is now our leading suspect rather than elapsed time. If it holds up I will drop back to 4 and report whether the interval stretches again.\n"
+    },
+    {
+      "user": "bryanvine",
+      "created": "2026-09-02T07:30:54Z",
+      "body": "One further recurrence on the mitigation posture, after the longest clean gap so far.\n\n- 2026-08-26 17:20:04 UTC\n- 2026-08-27 19:10:04 UTC\n- 2026-08-28 02:20:04 UTC\n- **2026-09-02 02:30:04 UTC** (new)\n\nSo the shortening interval I flagged on 2026-08-28 did not continue: 2026-08-29 through 2026-09-01 were clean (roughly 4.5 days, ~650 canary probes at a 10-minute cadence), then the same failure returned. Signature is unchanged, an unbroken run of `!` to the token cap, `finish_reason` length, container health and `/v1/models` both reporting fine throughout.\n\nEngine is still the posture described earlier in the thread: `intel/vllm:latest` (dev17, `vllm-0.21.1.dev17+g0a4756bb5`), `--gpu-memory-utilization 0.90`, no out-of-tree patches, `--max-num-seqs 12`, single card, W4A16 Qwen3.8-27B on Intel XPU. No driver events in dmesg around the failure, and no devcoredump was produced.\n\nThe intermittency profile now looks like a low-rate race rather than anything that correlates with load or uptime: the engine had been up and serving continuously across the clean stretch, and the failure landed in a low-traffic hour. Adding a second data point for anyone trying to reproduce, elapsed uptime before the event does not appear to be the variable.\n\nContent-level probing remains the only thing that catches it. Happy to run a specific instrumented build if that would help narrow it."
+    },
+    {
+      "user": "bryanvine",
+      "created": "2026-09-03T07:32:43Z",
+      "body": "Same-day second recurrence, which breaks the \"low-rate\" reading from my last comment.\n\n- 2026-08-26 17:20:04 UTC\n- 2026-08-27 19:10:04 UTC\n- 2026-08-28 02:20:04 UTC\n- 2026-09-02 02:30:04 UTC\n- **2026-09-02 14:50:04 UTC** (new)\n\nThe gap between the last two is 12h20m, against the 4.5-day clean stretch that immediately preceded them. So the failure is not spread evenly in time; it clusters. Both 09-02 events hit the same engine process generation only in the sense that the 02:30 restart brought up a fresh engine, which then failed again 12 hours later. Signature identical to every prior instance: unbroken `!` to the token cap, `finish_reason` length, container health and `/v1/models` clean throughout, no dmesg driver events, no devcoredump.\n\nPosture unchanged: `intel/vllm:latest` (`vllm-0.21.1.dev17+g0a4756bb5`), `--gpu-memory-utilization 0.90`, no out-of-tree patches, `--max-num-seqs 12`, single card, W4A16 Qwen3.8-27B on Intel XPU.\n\nOne new isolation data point. Since 2026-09-02 01:58 UTC I have run an equivalent content canary against a **second, independent engine on the other card of the same box**: same `dev17` image, but a different model and shape (W4A16 Qwen3-14B, `--max-num-seqs 12`, scoring-shaped prompts, 60 token generations, 10-minute cadence offset from the writer probe). That engine has been clean for the whole window, roughly 175 probes, including across both writer failures. Earlier in this thread I reported the degeneration on both cards, so this is not evidence that the second card is immune; it is evidence that the two engines do not fail together, which argues against anything box-wide (driver state, shared allocator pressure, thermal) and for something local to an engine process.\n\nThe other difference between the two engines is generation length: the writer produces 500 to 2000 token documents, the scorer produces about 20 tokens of JSON. If the race needs a long decode to expose itself, that would fit both the clustering and the card-symmetry I saw before.\n\nContent-level probing is still the only thing that detects this. Still happy to run an instrumented build.\n"
+    },
+    {
+      "user": "bryanvine",
+      "created": "2026-09-13T07:24:49Z",
+      "body": "Another recurrence on the mitigation posture, after the longest clean gap yet.\n\n- 2026-08-26 17:20:04 UTC\n- 2026-08-27 19:10:04 UTC\n- 2026-08-28 02:20:04 UTC\n- 2026-09-02 02:30:04 UTC\n- 2026-09-02 14:50:04 UTC\n- **2026-09-12 07:40:04 UTC** (new)\n\nThe gap since the previous event is 9 days 16h 50m, roughly double the 4.5-day stretch before the 09-02 pair. Signature identical to every prior instance: unbroken `!` to the token cap (one production call at 07:37:27 UTC ran to the 6144-token limit about three minutes before the canary probe caught it), container health and `/v1/models` clean, no dmesg driver events, no devcoredump. A plain `docker restart` recovered it (engine back at 07:40:08 UTC, `Application startup complete` shortly after), and it has been clean for the 24 hours since.\n\nPosture unchanged: `intel/vllm:latest` (`vllm-0.21.1.dev17+g0a4756bb5`), `--gpu-memory-utilization 0.90`, no out-of-tree patches, `--max-num-seqs 12`, single card, W4A16 Qwen3.8-27B on Intel XPU.\n\nThe independent scoring engine on the other card of the same box (same `dev17` image, W4A16 Qwen3-14B, short JSON generations, 10-minute content canary) logged no garbage across this event either. That makes three writer failures in a row with no matching failure on the short-decode engine, which still fits the reading that the race needs long decodes to show up and is local to an engine process rather than box-wide.\n"
+    },
+    {
+      "user": "faaany",
+      "created": "2026-09-15T10:45:39Z",
+      "body": "@bryanvine your model (Qwen3.8-27B) is a hybrid architecture: 48 of the 64 layers are GDN linear attention. That is the real difference from your pure-attention 14B/8B. This PR on vllm-xpu-kernels (https://github.com/vllm-project/vllm-xpu-kernels/pull/411) fixed a shared-local-memory race issue in the GDN chunk kernels that produces NaN logits ('!!!') on Arc Pro B70. The fix landed in v0.1.10, so it's not in the vllm_xpu_kernels 0.1.8.2 your image ships.\n\nCould you pls try the latest docker image `docker pull vllm/vllm-openai-xpu:v0.29.0` and see whether your case still persists?  If it still reproduces, please let us know. "
+    },
+    {
+      "user": "bryanvine",
+      "created": "2026-09-15T15:53:28Z",
+      "body": "@faaany thank you, that explains the 27B-only pattern. Tested today on the same Arc Pro B70 box:\n\n- Image: `vllm/vllm-openai-xpu:v0.29.0` (vllm 0.29.0+xpu, vllm_xpu_kernels 0.1.14.1, torch 2.13.0+xpu), replacing `intel/vllm:latest` (0.21.1.dev17, vllm_xpu_kernels 0.1.8.2).\n- Model: the same Qwen3.8-27B W4A16 checkpoint, `--max-num-seqs 12 --gpu-memory-utilization 0.90 --max-model-len 32768`, single card.\n- Repro condition: 12 parallel streams of ~700-token generations in 150 s rounds. On the old image this produced the `!!!!` degeneration within one round (36/36 responses garbage, corruption persisting after load dropped).\n- Result on v0.29.0: 4 rounds, 318 requests, 0 garbage, 0 errors, single-stream probes clean afterwards, no engine resets in dmesg. Aggregate throughput 135 to 144 tok/s at c=12 (about 10% under the old image's 155).\n\nThe writer is now serving production traffic on v0.29.0 with the same content canary that caught the earlier recurrences (last one on the old image: 2026-09-12). I will report back here if it reproduces again; otherwise consider the GDN chunk kernel fix confirmed for this case.\n"
+    }
+  ],
+  "cmt_40926": [
+    {
+      "user": "ccgibson",
+      "created": "2026-04-26T15:20:59Z",
+      "body": "## Update — bug also occurs WITHOUT MTP\n\nAfter filing this issue, we removed `--speculative-config` from our config and retested. The same crash pattern recurred:\n\n- **Config change**: `speculative_config=None` (everything else identical)\n- **Time to first crash**: ~14 minutes after engine ready\n- **Same stack trace**: `sample_tokens` RPC timeout → `EngineDeadError`\n- **Same `step_counter=0`** in scheduler dump\n\nSo the bug is **not specific to MTP**. The issue is somewhere deeper in the v0.20.0 V1 engine path on the GLM-5.1 (`GlmMoeDsaForCausalLM`) + LMCache + TP=8 stack. Disabling MTP and `--no-enable-flashinfer-autotune` extends MTTF to varying degrees but doesn't fix the underlying hang.\n\nReproduction is otherwise identical to the original report; just remove the `--speculative-config` flag and the bug still fires.\n\nThis makes the underlying root cause likely:\n- The DSA path itself (without MTP being involved)\n- Or the LMCache `LMCacheConnectorV1` integration with v0.20.0's V1 engine `step_with_batch_queue`\n- Or a v0.20.0 specific change to the scheduler / async pipeline that doesn't tolerate this connector setup\n\nPlease consider this a v0.20.0 GLM-5.1 + LMCache regression, not a pure MTP bug.\n\n"
+    },
+    {
+      "user": "ccgibson",
+      "created": "2026-04-28T23:14:48Z",
+      "body": "## Additional Data: v0.20.0 MP Mode Crash + DeepEP Root Cause Analysis\n\n### New Crash (April 28)\n\nReproduced on rtp-14 (8x H200 bare metal, NVLink) running v0.20.0 with LMCache MP mode (single-container pattern). Same `sample_tokens timed out` after ~7 min of serving.\n\n**Pre-crash state:**\n```\n22:29:34 - Avg prompt throughput: 5924.3 tokens/s, Running: 3 reqs, GPU KV cache: 37.1%\n22:29:44 - Avg prompt throughput: 2257.5 tokens/s, Running: 3 reqs, GPU KV cache: 37.1%\n22:29:54 - Avg prompt throughput: 0.0 tokens/s,    Running: 3 reqs, GPU KV cache: 37.1%\n22:34:36 - TimeoutError: RPC call to sample_tokens timed out.\n```\n\nProgressive stall: throughput drops 5924 → 2257 → 0.0 over 20s while 3 requests stay \"running\". No CUDA error, no OOM, no worker death. GPUs at 100% util (stuck, not idle). KV cache at 37% — no memory pressure.\n\n### Code Path Analysis\n\nTraced the hang through the source:\n\n1. `sample_tokens` is not the hang site — it's a downstream timeout. The actual hang is in `execute_model` during the model forward pass.\n\n2. With `LMCacheConnectorV1`/`LMCacheMPConnector` active, `kv_output_aggregator is not None`, so `output_rank = None` (line 350 of `multiproc_executor.py`). This means **all 8 workers must respond** — if any single worker hangs in `execute_model`, the executor blocks on `mq.dequeue(timeout=300)` waiting for that worker.\n\n3. The progressive throughput drop (5924 → 2257 → 0.0) suggests one worker fell behind, then the collective operations stalled all workers.\n\n### Most Likely Root Cause: DeepEP NVLink All-to-All\n\nGLM-5.1-FP8 with `--enable-expert-parallel` uses DeepEP for MoE dispatch/combine. Each MoE layer does:\n- `dispatch()` — NVLink SM-copy all-to-all (async)\n- Expert GEMM\n- `combine()` — NVLink SM-copy all-to-all (waits for dispatch)\n\nDeepEP's intra-node kernels operate directly on GPU shared memory via NVLink. Unlike NCCL (which has timeout and error reporting), **DeepEP has no timeout detection**. If one GPU stalls (memory pressure, ECC error, NVLink congestion, unbalanced expert routing), the other GPUs' SM-copy kernels spin waiting for data — showing 100% GPU utilization with no forward progress and no error.\n\nThis matches all symptoms:\n- 100% GPU util (spinning in NVLink SM-copy kernel)\n- No CUDA error (DeepEP doesn't report them)\n- No OOM (37% KV cache)\n- Stochastic trigger after 7-38 min (depends on specific token routing patterns)\n- Progressive stall (one worker falls behind → collective blocks all)\n\n### Proposed Diagnostic\n\n**Test without expert-parallel:**\n```\n# Remove --enable-expert-parallel, keep everything else identical\n--tensor-parallel-size 8\n# (no --enable-expert-parallel)\n```\nIf the hang disappears, it confirms DeepEP as the root cause.\n\n**py-spy dump at hang time:**\n```bash\npy-spy dump --pid $(pgrep -f VllmWorker-0) --nonblocking\n```\nExpected to show all workers stuck in:\n```\ndeepep_ht.py _finalize() → deep_ep.buffer.combine() → <C extension blocked>\n```\n\n**NCCL debug:**\n```\nNCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=ALL\n```\nTo differentiate NCCL deadlock from DeepEP deadlock.\n\n### Environment\n- vLLM v0.20.0 (self-built `v0.20.0-cu130-local`)\n- PyTorch 2.11, CUDA 13.0, FlashInfer (bundled)\n- GLM-5.1-FP8, TP=8, EP, FP8 KV cache, MLA\n- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`\n- `--disable-custom-all-reduce`\n- LMCache v0.4.4+nw.mp (MP mode, single-container)\n- 8x H200 via NVLink, bare metal"
+    },
+    {
+      "user": "ccgibson",
+      "created": "2026-04-29T05:44:26Z",
+      "body": "## Root Cause Found: FutureWrapper Refactoring in multiproc_executor.py\n\n### Key finding: `shm_broadcast.py` is identical between v0.19.1 and v0.20.0\n\n```\nmd5sum: 6715dbec1b803812fe7b42c1ca993ddc (both versions)\n```\n\nThe hang manifests in `shm_broadcast.py`'s `acquire_read` / `_spin_condition.wait()`, but the bug is in the **caller** — `multiproc_executor.py`'s `collective_rpc()` was refactored between v0.19.1 and v0.20.0.\n\n### What changed\n\n**v0.19.1 (working):**\n```python\nif non_block:\n    future = FutureWrapper(self.futures_queue, aggregate=aggregate)\n    self.futures_queue.appendleft((future, get_response))\n    return future\n# Synchronous path: drain pending futures FIRST, then call get_response directly\nwhile self.futures_queue:\n    future, get_fut_response = self.futures_queue.pop()\n    future.wait_for_response(get_fut_response)\nreturn aggregate(get_response())\n```\n\n**v0.20.0 (broken):**\n```python\nfuture = FutureWrapper(self.futures_queue, get_response=get_response, aggregate=aggregate)\nreturn future if non_block else future.result()\n```\n\nIn v0.20.0, **every call** (even synchronous) creates a `FutureWrapper` that captures `get_response` as an instance attribute. The `get_response` closure captures `deadline` at enqueue time. When the future is eventually resolved (after draining the LIFO queue), the deadline may have already expired.\n\n### The infinite hang path\n\n1. `execute_model` dispatched `non_block=True` → FutureWrapper A created with deadline T₁\n2. `sample_tokens` dispatched `non_block=True` → FutureWrapper B created with deadline T₂\n3. Worker stalls briefly during `execute_model` (FlashInfer 0.6.7 autotuning, Triton JIT, CUDA graph capture — any variable-time GPU operation)\n4. When `.result()` drains the queue, FutureWrapper A's `get_response()` runs with deadline T₁ that has already passed\n5. `dequeue_timeout = deadline - time.monotonic()` computes a **negative value**\n6. Negative timeout flows to `poller.poll()` — **zmq interprets negative timeout as poll forever**\n7. Worker hangs indefinitely in `_spin_condition.wait()`\n8. After 300s, the outer timeout fires: `TimeoutError: RPC call to sample_tokens timed out`\n\n### Why LMCache amplifies it\n\nWith `kv_output_aggregator` present (LMCache active), `output_rank = None`, forcing all 8 worker MQs to be drained sequentially. If any single worker's dequeue hits the negative-timeout path, the entire `get_response()` blocks. Without LMCache, only rank 0 responds — 8× less chance of hitting the race.\n\n### Why DeepEP amplifies it further\n\nDeepEP V1's NVLink SM-copy kernels have highly variable latency (no timeout, no error detection). A single slow dispatch/combine operation can stall a worker long enough to push the closure's captured deadline into the past. NCCL's `allgather_reducescatter` has lower variance, explaining the 5-10× MTTF improvement we observed (7-38 min with DeepEP → ~2hr with NCCL EP).\n\n### Why FlashInfer autotuning amplifies it\n\nFlashInfer 0.6.7 (shipped in v0.20.0) introduces new Triton autotuning paths that can cause 10-30s stalls on first execution. This pushes the async future pipeline into the degenerate case. We previously observed `--no-enable-flashinfer-autotune` improving MTTF 8× on DeepEP.\n\n### Proposed fix\n\n**Minimal (one-liner):** In `get_response()`, clamp timeout to non-negative:\n```python\ndequeue_timeout = None if deadline is None else max(0, deadline - time.monotonic())\n```\n\n**Belt-and-suspenders:** Also guard in `SpinCondition.wait()`:\n```python\nif timeout_ms is not None and timeout_ms < 0:\n    return  # already expired, don't block\n```\n\n**Architectural (cleanest):** Revert the FutureWrapper change so synchronous calls bypass the queue entirely (as v0.19.1 did), eliminating the closure-captured-deadline staleness window.\n\n### Evidence\n\n| Configuration | MTTF | Explanation |\n|---|---|---|\n| v0.19.1 + DeepEP | Stable (days) | No FutureWrapper refactoring, deadline is fresh |\n| v0.20.0 + DeepEP | 7-38 min | Stale deadline + high-variance DeepEP + FlashInfer autotune |\n| v0.20.0 + NCCL EP | ~2 hrs | Stale deadline + lower-variance NCCL, fewer autotune triggers |\n| v0.20.0 + DeepEP + `--no-flashinfer-autotune` | ~5 hrs | Removes one source of worker stall |\n\nAll configurations crash on v0.20.0; none crash on v0.19.1. The common denominator is the FutureWrapper refactoring.\n\n### Environment\n- vLLM v0.20.0, PyTorch 2.11, CUDA 13.0\n- GLM-5.1-FP8, TP=8, expert-parallel, FP8 KV cache, MLA\n- 8x H200 (NVLink) and 8x B200 (NVLink), bare metal\n- LMCache v0.4.4 (ConnectorV1)\n- Tested with both DeepEP V1 and `--all2all-backend allgather_reducescatter`"
+    },
+    {
+      "user": "cfregly",
+      "created": "2026-05-25T19:34:09Z",
+      "body": "## Companion data point + source-dive: MTP K=2 (`num_speculative_tokens=2`) deterministic crash on `GlmMoeDsa` (GLM-5.1) via `context_lens.is_contiguous()` assertion\n\nWe hit a related-but-not-identical failure on the same `GlmMoeDsaForCausalLM` codepath in our GLM-5.1 perf-tuning work — sharing both as a corroborating data point for the GLM-DSA MoE class of issues and because the source-dive may give a hint about the underlying instability.\n\n### Setup\n\n- vLLM `0.21.1.dev0+gad7125a43.d20260519`,\n- 8x B200, single replica, TP=8\n- Model: `nvidia/GLM-5.1-NVFP4` (NVFP4-quantized fork of `zai-org/GLM-5.1`)\n- Backend: `FLASHINFER_MLA_SPARSE`\n- KV cache dtype: `fp8_e4m3`\n- `--max-num-seqs=64`, `--max-num-batched-tokens=12288`\n\n### Symptom (K=2 deterministic, K=1 stable)\n\n- `--speculative-config={\"method\":\"mtp\",\"num_speculative_tokens\":1}` → STABLE, gives -50 to -72% TTFT across c=1..c=64 + ~33% MTP acceptance\n- `--speculative-config={\"method\":\"mtp\",\"num_speculative_tokens\":2}` → engine init succeeds (no warning), then **first inference request** crashes all 8 TP workers with:\n\n```\nFile \"vllm/v1/spec_decode/llm_base_proposer.py\", line 545, in propose\nFile \"vllm/v1/spec_decode/llm_base_proposer.py\", line 817, in build_per_group_and_layer_attn_metadata\nFile \"vllm/v1/attention/backend.py\", line 645, in build_for_drafting\nFile \"vllm/v1/attention/backends/mla/indexer.py\", line 615, in build\n    self.scheduler_metadata_buffer[:] = get_paged_mqa_logits_metadata(...)\nFile \"vllm/utils/deep_gemm.py\", line 404, in get_paged_mqa_logits_metadata\nRuntimeError: Assertion error (csrc/apis/attention.hpp:201): context_lens.is_contiguous()\n```\n\nThis is upstream of the `sample_tokens` RPC timeout you're seeing in #40926, but on the same `GlmMoeDsaForCausalLM` model + MTP path. Possible they're independent (failure 1: tensor-contiguity assertion at K>1 — fails fast; failure 2: TP worker hang after sustained load — fails slow), or symptoms of the same fragility in the GLM-DSA + MTP drafting path.\n\n### Source-dive findings (vLLM SHA `d4004455d`)\n\nPer `vllm/v1/attention/backends/mla/indexer.py`:\n\n- **Lines 291-298**: a shared workspace `decode_seq_lens_buffer` is allocated as a flat contiguous 1D `int32` tensor. The comment explicitly says \"Native MTP views this as `(B, max_decode_len)` at runtime, keeping context_lens contiguous even when max_decode_len is smaller than next_n.\"\n- **Lines 451-464** (MTP native path, `use_native and next_n > 1`): a prefix slice + `.view(num_decodes, max_decode_len)` is taken from that buffer. A prefix slice + view of a contiguous 1D buffer **should** yield a contiguous 2D tensor.\n- The flatten path at lines 376-441 also explicitly returns `self.decode_seq_lens_buffer[:num_decode_tokens]` — a contiguous prefix slice.\n\nSo by static reading, `seq_lens` SHOULD already be contiguous when it reaches the asserting kernel at line 613. But the C-kernel assertion at `csrc/apis/attention.hpp:201` fires in practice at K>1.\n\n### Hypotheses (we haven't verified)\n\nSome path we haven't traced lets a non-contiguous tensor reach the kernel. Candidates:\n\n1. The `compress_ratio > 1` branch at `indexer.py:589-603` (DeepSeek-V4 path)\n2. A drafting-only construction at the caller (`llm_base_proposer.py:817`) that bypasses the shared workspace\n3. A subtle CUDA-graph capture/replay quirk where stride information differs between capture and replay\n4. `seq_lens.unsqueeze(1)` interacting unexpectedly with the in-place assignment to `seq_lens_buffer` when `next_n > 1`\n\n### Suggested defensive patch (always-safe two-layer guard)\n\nEven if the root cause is upstream of the assertion site, adding `.contiguous()` at the call boundary fixes the symptom for users today and has zero overhead in the common case (`.contiguous()` on an already-contiguous tensor returns `self`):\n\n```python\n# vllm/v1/attention/backends/mla/indexer.py:613 — narrow fix for GLM-DSA + MTP\nself.scheduler_metadata_buffer[:] = get_paged_mqa_logits_metadata(\n    seq_lens.contiguous(), block_size, num_sms,  # +.contiguous()\n)\n```\n\n```python\n# vllm/utils/deep_gemm.py:404 — defense in depth at the wrapper\ndef get_paged_mqa_logits_metadata(context_lens, block_size, num_sms):\n    return _get_paged_mqa_logits_metadata_impl(\n        context_lens.contiguous(), block_size, num_sms  # +.contiguous()\n    )\n```\n\nTwo layers because:\n- The narrow fix catches the specific GLM-DSA / DeepSeek code path\n- The wrapper catches anyone else who calls `get_paged_mqa_logits_metadata` with a non-contiguous tensor (future-proof)\n\n### Workaround we're using\n\nStay on `num_speculative_tokens=1`. K=1 still gives meaningful TTFT improvements as documented (we observe -50 to -72% TTFT across c=1..c=64 + ~33% MTP acceptance). For higher concurrency throughput we tune `--max-num-seqs` up to 192 instead (the non-MTP path; works cleanly to c=192 = 3958 tok/s on our setup).\n\n### Relationship to our other report\n\nWe also commented on #42363 (Kimi K2.6 sustained-load `shm_broadcast` `EngineDeadError`) with corroborating data on a similar TP=8 sustained-load failure mode. The two bugs may share an underlying weakness in vLLM 0.21.x's TP-worker coordination paths under MoE + sustained load + speculative decoding.\n\nHappy to share any of the bundled crash logs / source-dive worksheets if useful."
+    },
+    {
+      "user": "ARSblithe212",
+      "created": "2026-07-02T02:55:15Z",
+      "body": "We're hitting what looks like the same deadlock on a **different model and TP size**, and traced it to **async scheduling being auto-enabled for MTP**. Sharing a reproduction and root-cause analysis in case it helps move this forward.\n\n## Environment\n- vLLM **0.23.0** (official `vllm/vllm-openai:v0.23.0` image)\n- Model: **Qwen3-Next 27B** with the `qwen3_next_mtp` MTP head (hybrid linear-attention / Mamba + MoE)\n- **TP=2** on 2×A800-80GB\n- Serving flags (abridged): `--speculative-config '{\"method\":\"qwen3_next_mtp\",\"num_speculative_tokens\":1}' --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 --enable-prefix-caching --max-model-len 262144`\n- **We did NOT pass `--async-scheduling`.**\n\n## Symptom (matches this issue)\nUnder sustained production traffic, generation silently stalls: `Avg generation throughput: 0.0 tokens/s` while `Running: N>0, Waiting: M>0`, **GPU utilization 0% at idle power**, no exception, no NCCL timeout, no self-recovery; `/metrics` keeps returning 200.\n\n`py-spy dump` at the moment of hang (TP=2):\n- **EngineCore** main thread: `run_busy_loop → _process_engine_step → step_with_batch_queue (v1/engine/core.py) → MultiprocExecutor.execute_model → collective_rpc` — i.e. blocked handing off the next command on `rpc_broadcast_mq` (the `enqueue`/`acquire_write` side, which is called with `timeout=None`).\n- **Both workers**: `worker_busy_loop → shm_broadcast.dequeue → acquire_read → SpinCondition.wait` — **the exact stack reported in this issue**.\n\nSo the engine is spinning trying to enqueue the next command onto the broadcast MQ while both workers idle-wait for a command to read — a broadcast ring-buffer standstill on `rpc_broadcast_mq`. CPU is burning (spin-poll), which is why there is no NCCL timeout and GPU sits at 0%.\n\n## Root cause we found: async scheduling is auto-enabled for MTP\nThe user never asked for async scheduling. In `VllmConfig.__post_init__` (`vllm/config/vllm.py`), when `scheduler_config.async_scheduling is None` it is **auto-enabled** unless an incompatibility matches. The spec-decode guard only disables async when the method is *not* in `EagleModelTypes`:\n\n```python\nelif (self.speculative_config is not None\n      and self.speculative_config.method not in get_args(EagleModelTypes)\n      and self.speculative_config.method not in get_args(NgramGPUTypes)):\n    self.scheduler_config.async_scheduling = False\n```\n\nBut in `vllm/config/speculative.py`, `EagleModelTypes` **includes** `MTPModelTypes`:\n\n```python\nEagleModelTypes = Literal[\"eagle\", \"eagle3\", \"extract_hidden_states\", MTPModelTypes, DFlashModelTypes]\n```\n\nso `\"mtp\"` and `\"qwen3_next_mtp\"` are in `get_args(EagleModelTypes)` → the disable branch is skipped → async is auto-enabled. Confirmed in the logs:\n\n```\n[config/vllm.py:999] Asynchronous scheduling is enabled.\n```\n\nThis is what silently puts every MTP deployment on the `step_with_batch_queue` (batch_queue) pipelined path — the path where this hang lives. **Both 0.23.0 and current `main` still do this** (the resolver is unchanged aside from a ROCm-only branch).\n\n## Why the pipelined path is fragile here\n`step_with_batch_queue` issues `execute_model` / `sample_tokens` via `collective_rpc(non_block=True)` and reads results lazily (it returns early while `len(batch_queue) < batch_queue_size` and there are still requests). With **structured output + MTP**, sampling is deferred (`scheduler_output.pending_structured_output_tokens` → `deferred_scheduler_output`), and the extra `sample_tokens` RPC for that step is appended a step later — so the number and timing of commands enqueued onto `rpc_broadcast_mq` becomes irregular. Under KV saturation (in our load harness we sit at **~99% GPU KV cache usage with ~120 `Deferred` reqs**), the writer/reader positions on the fixed broadcast ring appear to desync, and because the command-side `enqueue → acquire_write` is called with `timeout=None`, the engine spins forever. Note `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS` does **not** help — it only bounds the response-side `dequeue`, not the command-side `enqueue`."
+    },
+    {
+      "user": "bongjiwoo-beep",
+      "created": "2026-08-05T04:34:21Z",
+      "body": "Another data point, from a config that differs on one axis that might help triangulate: **TP=2 split across two physical nodes (1 GPU each) over RoCE/RDMA**, on NVIDIA GB10 (DGX Spark, `sm_121a`, aarch64, unified memory).\n\nSame signature as the report above — `sample_tokens` RPC timeout, `step_counter=0`, `EngineDeadError`, container stays `Up` while the engine is gone.\n\n### Environment\n\n- vLLM `v0.21.1rc1.dev339+g1967a5627bc3`\n- Model: `DeepSeek-V4-Flash-0731` — MoE + MLA + sparse attention indexer, `quantization=deepseek_v4_fp8`, `kv_cache_dtype=fp8`, `max_model_len=524288`\n- Speculative decoding: `SpeculativeConfig(method='dspark', num_spec_tokens=5)` (MTP family)\n- `tensor_parallel_size=2`, `distributed_executor_backend=mp`, `world_size=2, local_world_size=1` (one GPU per host, control plane + NCCL over a direct 200G QSFP RoCE link)\n- `enable_prefix_caching=True`, `enable_chunked_prefill=True`, `cudagraph_mode=FULL_AND_PIECEWISE`\n- 2× NVIDIA GB10, 128 GB unified memory per node, `gpu_memory_utilization=0.85`\n\n### What we saw\n\nTwo engine deaths within ~40 minutes on the same day, both with this signature:\n\n```\n(EngineCore) ERROR core.py:1177   File \".../vllm/v1/executor/multiproc_executor.py\", line 386, in get_response\n(EngineCore) ERROR core.py:1177     status, result = mq.dequeue(timeout=dequeue_timeout)\n(EngineCore) ERROR core.py:1177   File \".../vllm/distributed/device_communicators/shm_broadcast.py\", line 691, in acquire_read\n(EngineCore) ERROR core.py:1177     self._spin_condition.wait(timeout_ms=read_timeout.timeout_ms())\n(EngineCore) ERROR core.py:1177 TimeoutError\n(EngineCore) ERROR core.py:1177 The above exception was the direct cause of the following exception:\n...\n(EngineCore) ERROR core.py:1177   File \".../vllm/v1/executor/multiproc_executor.py\", line 388, in get_response\n(EngineCore) ERROR core.py:1177     raise TimeoutError(f\"RPC call to {method} timed out.\") from e\n(EngineCore) ERROR core.py:1177 TimeoutError: RPC call to sample_tokens timed out.\n```\n\nScheduler dump at death — note `step_counter=0`, matching the original report:\n\n```\nSchedulerStats(num_running_reqs=1, num_waiting_reqs=0, num_skipped_waiting_reqs=0,\n               step_counter=0, current_wave=0, kv_cache_usage=0.0989,\n               prefix_cache_stats=PrefixCacheStats(requests=0, queries=0, hits=0), ...)\n```\n\nThe in-flight request was tiny — **29 prompt tokens**, `max_tokens=8000`, `temperature=0.0`, no spec-decode tokens scheduled:\n\n```\nSchedulerOutput(scheduled_new_reqs=[NewRequestData(prompt_token_ids_len=29, num_computed_tokens=0, ...)],\n                num_scheduled_tokens={...: 29}, total_num_scheduled_tokens=29,\n                scheduled_spec_decode_tokens={}, preempted_req_ids=[], finished_req_ids=[])\n```\n\n### Points that may be useful\n\n1. **The timeout was the default 300 s, not 40 s.** `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS` defaults to `300` in this version, and `sample_tokens` uses it (`multiproc_executor.py:326`). So the worker produced no response for a *full five minutes*. That looks like a genuine hang rather than a slow forward pass, and suggests raising the timeout is not a workaround for this failure mode.\n2. **It is not load-dependent in an obvious way here.** Both deaths happened at low occupancy (`kv_cache_usage ≈ 0.10`, one running request, nothing waiting) on a request of 29 tokens — not under the sustained traffic described in the original report. Whatever the trigger is, it does not require a busy scheduler.\n3. **No evidence of a network/transport flap on our side**, despite TP spanning two hosts: `dmesg` on both nodes shows no NIC or RoCE link events anywhere near the crash — the most recent link event was 11 days earlier. (We cannot fully rule out a transport-level stall, only a link-layer event.)\n4. The shared factors across this report and the GLM-5.1 one look like **V1 engine + speculative decoding (MTP/DSpark) + TP + MoE/MLA**, across quite different hardware (H-class ×8 single node vs. 2× GB10 aarch64 multi-node) and different model families. That combination seems more suspicious than any particular model or interconnect.\n\n### Limitation of this report\n\nWe lost the worker-side logs for both events — the recovery procedure recreated the containers, so we only have the head/EngineCore side. We have changed our runbook to dump both sides before restarting, and will attach worker logs if it recurs. So far we have seen it twice, both on the same day, so we do not yet know the recurrence rate. Happy to collect anything specific that would help (env vars, a particular log level, a py-spy dump of the worker while it is hung).\n"
+    },
+    {
+      "user": "leviGp",
+      "created": "2026-08-10T18:16:33Z",
+      "body": "**Same hang on a different model family and platform — with a py-spy stack of the exact livelock point.**\n\nWe hit what looks like this same bug on:\n\n- **Model:** `nvidia/Qwen3.6-35B-A3B-NVFP4` (Qwen3.6 MoE, NVFP4/modelopt quant)\n- **Hardware:** NVIDIA DGX Spark (GB10, `sm_121a`, aarch64 Grace CPU), driver `580.126.09`\n- **vLLM:** `vllm/vllm-openai:nightly` image built 2026-07-08, `/version` reports `0.23.1rc1.dev861+gcbe9c40f9`\n- **Config:** V1 engine, MTP spec decode (`{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"moe_backend\":\"triton\"}`), `--kv-cache-dtype fp8`, `--attention-backend flashinfer`, `--moe-backend marlin`, `--enable-prefix-caching`, `--enable-chunked-prefill`, `--max-num-seqs 4`, `--max-model-len 262144`\n- **Traffic:** low-rate agentic workload (tool-calling chat completions, `--reasoning-parser qwen3`, `--tool-call-parser qwen3_xml`), typically 1–2 concurrent requests\n\n**Symptoms:** identical to OP — the API server stays healthy (`/health` 200, status logs keep printing), but generation throughput decays to 0 tok/s within ~30s while the engine still reports `Running: 2, Waiting: 0`, and the stuck requests never complete or error. GPU pinned at 96% utilization the whole time; no Xid errors in dmesg. Restarting the container clears it; it recurs. We ran ~5 weeks without incident under very light traffic; under sustained concurrent traffic MTTF dropped to roughly 1 hour, consistent with the MTTF numbers reported above.\n\nLog excerpt at the moment of the wedge (throughput decays and never recovers, requests stay \"Running\" forever):\n\n```\nINFO [loggers.py:271] Engine 000: Avg generation throughput: 103.4 tokens/s, Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%\nINFO [loggers.py:271] Engine 000: Avg generation throughput: 41.6 tokens/s,  Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%\nINFO [loggers.py:271] Engine 000: Avg generation throughput: 0.0 tokens/s,   Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%\n```\n\n**New data — py-spy dump of the wedged EngineCore.** The main thread is *active* (burning CPU, not blocked), and three dumps taken 5 seconds apart show the identical frame, i.e. a livelock rather than a blocked wait:\n\n```\nProcess 1466005: VLLM::EngineCore\nPython v3.12.3 (/usr/bin/python3.12)\n\nThread 289 (active): \"MainThread\"\n    update_async_output_token_ids (vllm/v1/worker/gpu_input_batch.py:1042)\n    _sample (vllm/v1/worker/gpu_model_runner.py:3490)\n    sample_tokens (vllm/v1/worker/gpu_model_runner.py:4364)\n    decorate_context (torch/utils/_contextlib.py:124)\n    sample_tokens (vllm/v1/worker/gpu_worker.py:778)\n    decorate_context (torch/utils/_contextlib.py:124)\n    run_method (vllm/v1/serial_utils.py:510)\n    collective_rpc (vllm/v1/executor/uniproc_executor.py:97)\n    sample_tokens (vllm/v1/executor/uniproc_executor.py:125)\n    step_with_batch_queue (vllm/v1/engine/core.py:515)\n    _process_engine_step (vllm/v1/engine/core.py:1238)\n    run_busy_loop (vllm/v1/engine/core.py:1199)\n    run_engine_core (vllm/v1/engine/core.py:1158)\n    run (multiprocessing/process.py:108)\n    _bootstrap (multiprocessing/process.py:314)\n    _main (multiprocessing/spawn.py:135)\n    spawn_main (multiprocessing/spawn.py:122)\n    <module> (<string>:1)\nThread 433 (active): \"Thread-1 (_report_usage_worker)\"\n    _report_continuous_usage (vllm/usage/usage_lib.py:256)\n    _report_usage_worker (vllm/usage/usage_lib.py:174)\n    run (threading.py:1010)\n    _bootstrap_inner (threading.py:1073)\n    _bootstrap (threading.py:1030)\nThread 441 (idle): \"tqdm_monitor\"\n    wait (threading.py:359)\n    wait (threading.py:655)\n    run (tqdm/_monitor.py:69)\n    _bootstrap_inner (threading.py:1073)\n    _bootstrap (threading.py:1030)\nThread 488 (idle): \"tqdm_monitor\"\n    wait (threading.py:359)\n    wait (threading.py:655)\n    run (tqdm/_monitor.py:69)\n    _bootstrap_inner (threading.py:1073)\n    _bootstrap (threading.py:1030)\nThread 489 (idle): \"Thread-2 (process_input_sockets)\"\n    poll (zmq/sugar/poll.py:106)\n    process_input_sockets (vllm/v1/engine/core.py:1463)\n    run (threading.py:1010)\n    _bootstrap_inner (threading.py:1073)\n    _bootstrap (threading.py:1030)\nThread 490 (idle): \"Thread-3 (process_output_sockets)\"\n    wait (threading.py:355)\n    get (queue.py:171)\n    process_output_sockets (vllm/v1/engine/core.py:1530)\n    run (threading.py:1010)\n    _bootstrap_inner (threading.py:1073)\n    _bootstrap (threading.py:1030)\nThread 495 (idle): \"signal-callback\"\n    wait (threading.py:355)\n    wait (threading.py:655)\n    _run (vllm/v1/engine/utils.py:255)\n    run (threading.py:1010)\n    _bootstrap_inner (threading.py:1073)\n    _bootstrap (threading.py:1030)\n```\n\nSo on our build the hang is the model runner spinning in `update_async_output_token_ids` inside `_sample`, on the `step_with_batch_queue` path — all other threads (input/output sockets) are idle and healthy, which is why the API server keeps answering while requests hang. This fits the scheduler/runner `output_token_ids` reconciliation suspicion (see #20247): it looks like a busy-wait for async output token ids that never arrive.\n\nWe have just removed `--speculative-config` (everything else identical) and will report back on stability under the same traffic. Happy to provide more dumps, logs, or test patches — the hang was reproducible for us within hours under real traffic."
+    },
+    {
+      "user": "nichdiekuh",
+      "created": "2026-08-21T15:38:11Z",
+      "body": "**TP=1 single-GPU repro on RTX PRO 6000 (SM120) — engine spins but never self-recovers**\n\nAdding a data point that differs from every prior report here on one axis: **single-GPU / TP=1**. All the reproductions above are TP≥2, so the shared `multiproc_executor.py` `collective_rpc()` refactor can't be the whole story — we hit the same 100%-GPU-util silent stall with a single worker.\n\n**Models (both hang):**\n- `Ornith-1.5-35B-A3B-NVFP4` — Qwen3.6-family GDN-hybrid MoE — on **vLLM v0.26.0** (stock image)\n- `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` — Mamba-2-hybrid MoE — on **vLLM v0.27.1**\n\nSo both v0.26.0 and v0.27.1 are affected. A **dense** Qwen3.6/3.8-27B on the same host, same flags, has never hung — only the MoE + linear-attention (GDN/Mamba) hybrids do.\n\n**Hardware/config:** 1× RTX PRO 6000 Blackwell (`sm_120`), single node, TP=1. MTP `num_speculative_tokens` **1 and 2 both hang** (we reduced 3→2→1 chasing a separate CUDA-IMA crash; it did not prevent the hang). `--enable-prefix-caching`, fp8 KV cache, FlashInfer attention + FLASHINFER_CUTLASS MoE. Low-rate agentic traffic (tool-calling chat completions, 1–4 concurrent).\n\n**Signature:**\n- GPU pinned at **100% util but idle-level power (~135 W, vs 250–550 W under real work)** — a spinning kernel, not a waiting one. This power delta is a reliable tell for the wedge.\n- `/health`, `/metrics` and `/v1/models` all keep returning 200; only a real completion reveals the wedge (it times out).\n- **No `sample_tokens` RPC timeout, no `EngineDeadError`, no EngineCore death, no auto-restart.** The engine spins indefinitely until a manual `docker restart`.\n\nThe lack of any RPC timeout / self-recovery is the key difference from the TP≥2 cases: since the `collective_rpc`/`shm_broadcast` path needs ≥2 workers, TP=1 hanging here points to either a **second, distinct hang path** or a root cause broader than the FutureWrapper refactor.\n\n**Mitigation we run in production:** an external liveness probe does a real mini-completion per instance every 90 s and `docker restart`s on 2 consecutive timeouts, since the engine never self-recovers on TP=1. Recovery ~2 min vs. the ~12–17 min internal restart others report.\n\n**Contrast data point:** `DeepSeek-V4-Flash-0731` (MoE + MLA + sparse) at **TP=2 single-node** runs stably for us under normal load — in contrast to @bongjiwoo-beep's multi-node RoCE/RDMA repro. So the multi-node/RDMA transport may be a separate aggravator from the single-node hang.\n\nHappy to run a `py-spy dump` against the wedged process next time it triggers if that would help localize the TP=1 path.\n"
+    },
+    {
+      "user": "klapom",
+      "created": "2026-09-04T21:21:04Z",
+      "body": "**Negative controls on TP=1 / DGX Spark (GB10) — five load shapes that do *not* reproduce it**\n\nWe run the same model and version @nichdiekuh reports and went looking for this failure mode. **We could not reproduce it in five configurations.** Since this thread has positive reports but no systematic negative controls, here is what did *not* trigger it — hopefully it narrows the search space.\n\n**Environment** — deliberately matched to the report above:\n\n- `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4`, vLLM **v0.27.1** (stock `vllm/vllm-openai:v0.27.1`), V1 engine, **TP=1**\n- DGX Spark (GB10, `sm_121a`, aarch64 Grace), single GPU\n- `speculative_config=SpeculativeConfig(method='dspark', num_spec_tokens=3)`\n- `--moe-backend marlin --kv-cache-dtype fp8 --mamba-backend flashinfer --mamba-cache-mode align --enable-prefix-caching --enable-chunked-prefill --max-num-seqs 3 --max-model-len 262144`, `enable_flashinfer_autotune=True`\n- agentic tool-calling: `--enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser nemotron_v3`\n\nEach run started a **fresh** engine with 60–80 GB memory free. Wedge detection: `vllm:generation_tokens_total` flat while `vllm:num_requests_running > 0`, sampled every 15–20 s.\n\n| # | Load | Duration | Volume | Result |\n|---|---|---|---|---|\n| 1 | `tool_choice:auto`, short prompts, 4 concurrent | 25 min | 784 req, Δ280,853 gen tok | no wedge · `spec_accept` 0.710→0.712 |\n| 2 | **real multi-round agents** over 484 documents, saturated (`running=3`, ~245 queued) | 90 min | Δ908,095 gen tok | no wedge · throughput flat 160–180 tok/s · `spec_accept` 0.689 |\n| 3 | **45k-token prompts**, 3 concurrent | 60 min | 165 req, **Δ14,182,601 prompt tok** | no wedge · `spec_accept` 0.727–0.750 · **preemptions 0** |\n| 4 | **forced `tool_choice`** (guided decoding) + 4-round agent loop | 45 min | 386 req / 698 rounds, Δ329,354 gen tok | no wedge · `spec_accept` 0.682–0.699 · preemptions 0 |\n| 5 | all of the above **plus a populated 9,966-memory store the agents search** (long, non-uniform contexts) | 15 min (ended early by our harness) | 484 docs, Δ164,583 gen tok | no wedge · `spec_accept` 0.663 · preemptions 0 |\n\n**What this rules out on TP=1 with this model:** request volume, sustained saturation, agentic tool-calling, long contexts, and structured output / guided decoding — none of them trigger the wedge in isolation, and run 5 shows they don't trigger it in combination either.\n\nOne measurement that may be relevant to the mechanism: **`spec_decode_num_accepted_tokens / num_draft_tokens` stayed flat in every run** (0.66–0.78, no downward drift over 90 minutes of saturation). If the hypothesis is a slow degradation in the speculative path, we did not observe it.\n\nHappy to run any specific configuration on GB10/TP=1 if it helps. The harness is ready — `--cap-add=SYS_PTRACE` with `py-spy dump --locals` / `--native` and a 15 s `record` for the hot frame — we simply never got an on-demand reproduction to point it at. Note if you want frames from us: @leviGp's stack is from `0.23.1rc1`, ours would be **v0.27.1** line numbers.\n"
+    }
+  ],
+  "cmt_56815": [
+    {
+      "user": "ZJY0516",
+      "created": "2026-09-14T13:01:56Z",
+      "body": "https://github.com/vllm-project/vllm/pull/56512 should only affect deepseek v4.1f"
+    },
+    {
+      "user": "wombat",
+      "created": "2026-09-15T08:07:03Z",
+      "body": "Thanks @ZJY0516 — checked against the installed package before replying, and you're right: this model's lookup path is untouched by #56512. `vllm/models/qwen4_exp/nvidia/ngram_embedding.py` is standalone (grep for `deepseek_v4_1` in `qwen4_exp/nvidia/*.py` → zero hits, verified inside `nightly-dc36fcce`), and #56512's non-test file set (`config/engram.py`, `config/vllm.py`, `envs.py`, `parallel_state.py`, `deepseek_v4_1/{common,nvidia}/engram.py`, `deepseek_v4_1/nvidia/model.py`) never reaches it. So the prefetch stream provably cannot execute for Qwen4Exp at TP=1 — my prime-suspect attribution was wrong; retitling to the nightly range.\n\nRe-scoping suspects to global-scope commits in `eed1f3d0..dc36fcce`, by file footprint:\n\n1. **#56682** (now prime) — touches `model_executor/model_loader/weight_utils.py` + `model_executor/model_loader/dummy_loader.py`, i.e. exactly the dummy-init path that this model's 47.7 GiB pinned-host PLE table goes through at startup (the commit subject itself: \"…random CPU Engram fills\"). A warmup/init change there is consistent with the fault being silent, state-dependent (full-sweep-only), and log-invisible.\n2. #56688 — FP8 dummy-init conversions, same dummy-run path.\n3. #56452 — DeepGEMM FP8 warmup coverage.\n\nThe flake data is unchanged and reproducible at range level: `ctx_tg @ d32768 (c1)` collapses 2 of 3 runs in both full sweeps (82.50 ±46.37 / 95.16 ±61.63), clean in isolation (150.08 ±7.73, 7 runs) and on a sweep-prefix replay (146.46 ±15.60), with the five eed1f3d0 sweeps at sd ≤ 8.7 on the identical config.\n\nI can build overlay images for intermediate nightlies (the `eed1f3d0..2671fedf` slice brackets #56682 — it landed inside it), which would reduce the remaining suspect list to one commit per bisect round. Which slice would you like me to bisect first, and/or is there an existing knob (dummy-load toggle, VLLM_LOGGING_LEVEL=DEBUG subsystem) that would make the intermediate slow steps self-identifying?\n"
+    },
+    {
+      "user": "wombat",
+      "created": "2026-09-15T09:27:41Z",
+      "body": "Retracting — root cause found and it is not in the nightly range. Both \"bad\" sweeps were disturbed by a **second client using this engine concurrently** (LAN agent traffic, 50k-200k-token prompts with max_tokens in the 100k-200k range; the benchmark always sends max_tokens=128, so the requests are distinguishable in the access log). A 50-200k prefill chunked at 4096 tokens produces exactly the observed signature: 0.5-0.75 s inter-token latencies (27 in a 15 s window vs 0 in good runs), a 33k-token request preempted during a concurrency-1 cell, `vllm:num_requests_running` = 2 during c1 cells. Correlation is clean: both collapsed sweeps had a foreign request complete inside the sick cell (09:42:01 / 09:58:58 UTC); the clean isolated/prefix-replay runs had foreign traffic that missed that cell; a reduced sweep today on `dc36fcce` with zero foreign requests gives `ctx_tg @ d32768 (c1) = 155.15 ± 6.01` — no flake. My \"ruled out: host interference\" checked container/kernel logs but not the engine access log. My suspect list (#56512, then #56682) was wrong; the qwen4_exp ngram module is byte-identical across the range.\n\n@ZJY0516 your reply was correct and my re-scoping after it was still noise — sorry for the churn.\n\nOne real finding survives the code-range analysis, unrelated to the flake: **#56654 reverted 6 of #56323's 28 files**, so net against pre-#56323 the V2 runner no longer pre-warms the sampler/rejection Triton kernels — the build logs `JIT kernel warmup finished in 0.00s` and vLLM's \"Triton kernel JIT compilation during inference\" warnings on the first post-boot requests (a few seconds of first-request latency, nothing later). Might merit a follow-up on the #56654 side.\n"
+    },
+    {
+      "user": "wombat",
+      "created": "2026-09-15T09:27:43Z",
+      "body": "Closed: external concurrent client, not a vLLM regression. See retraction comment above."
+    }
+  ],
+  "cmt_36826": [
+    {
+      "user": "haosdent",
+      "created": "2026-03-12T06:01:05Z",
+      "body": "If you disable async scheduling, would it help?"
+    },
+    {
+      "user": "imi187",
+      "created": "2026-03-12T10:02:44Z",
+      "body": "I found the main issue on my side.\nThe stalls were caused by blocking work inside my own async SSE endpoint, which was polling vLLM/health state and interfering with the request flow.\nAfter moving that work out of the async path, I can no longer reproduce the issue the same way.\nSorry for the noise, and thanks for the suggestions."
+    }
+  ],
+  "cmt_18431": [
+    {
+      "user": "CastFX",
+      "created": "2025-05-22T22:24:20Z",
+      "body": "Having the same problem with Qwen/Qwen3-235B-A22B\nStuck with \n\n```Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 64 reqs, Waiting: 34 reqs, GPU │  KV cache usage: 96.8%, Prefix cache hit rate: 3.3%```"
+    },
+    {
+      "user": "exthirteen",
+      "created": "2025-05-27T02:27:09Z",
+      "body": "> 遇到与 Qwen/Qwen3-235B-A22B相同的问题\n> \n> `Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 64 reqs, Waiting: 34 reqs, GPU │ KV cache usage: 96.8%, Prefix cache hit rate: 3.3%`\n\nWhen using Qwen/Qwen3-4B, there is also a similar issue"
+    },
+    {
+      "user": "david-pureal",
+      "created": "2025-06-12T09:02:46Z",
+      "body": "Having the same problem with Qwen2.5-72B-Instruct, does anyone know how to reproduce it?"
+    },
+    {
+      "user": "zenzen-sol",
+      "created": "2025-06-17T08:01:32Z",
+      "body": "I'm having a similar issue with `ds4sd/SmolDocling-256M-preview`. Requests blocked. Prompt processing stalls."
+    },
+    {
+      "user": "adoosth",
+      "created": "2025-09-11T15:13:07Z",
+      "body": "Same issue here. Also getting near-100% GPU KV cache usage."
+    },
+    {
+      "user": "sthakur2-sc",
+      "created": "2025-09-20T17:23:49Z",
+      "body": "+1, I I run the same data offline with LLM().generate it seems to work. The throughput diff is almost 6x\n"
+    },
+    {
+      "user": "javiergonzales06",
+      "created": "2025-10-10T12:39:09Z",
+      "body": "Having the same problem. Also getting near-100% GPU KV cache usage. When it reaches 100%, requests have been routed to waiting."
+    },
+    {
+      "user": "github-actions[bot]",
+      "created": "2026-01-10T02:13:46Z",
+      "body": "This issue has been automatically marked as stale because it has not had any activity within 90 days. It will be automatically closed if no further activity occurs within 30 days. Leave a comment if you feel this issue should remain open. Thank you!"
+    },
+    {
+      "user": "njhill",
+      "created": "2026-01-10T21:10:22Z",
+      "body": "This should be resolved in recent versions, please re-open if not."
+    },
+    {
+      "user": "bad49wolf",
+      "created": "2026-01-23T14:43:39Z",
+      "body": "still \n(APIServer pid=1103074) INFO 01-23 14:35:50 [loggers.py:257] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 17 reqs, Waiting: 770 reqs, GPU KV cache usage: 13.5%, Prefix cache hit rate: 46.9%, MM cache hit rate: 73.2%\ntried to update to latest version of vllm .\ngpu: L40s\nunless i restart the vllm server but after nearly 20k -30k procecced request it get stall.\nmodel: Qwen-4b-vision-instruct"
+    },
+    {
+      "user": "piatsko",
+      "created": "2026-03-12T08:35:43Z",
+      "body": "Having the same with Qwen3.5-27B when attaching base64-encoded images. Lowering images DPI helps, though, but still vllm hangs from time to time\nVLLM docker image `vllm-openai@sha256:34ff91196f4157607cc8470e6fd0a8a6bf1a1c10232e4b007a35ae400ac65c12 ` with `Version: 0.17.1rc1.dev88+g36735fd77`\n`(APIServer pid=1) DEBUG 03-12 08:34:50 [v1/metrics/loggers.py:259] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 9.6%, Prefix cache hit rate: 11.6%, MM cache hit rate: 22.2%`\n"
+    },
+    {
+      "user": "weathon",
+      "created": "2026-06-22T04:44:00Z",
+      "body": "yeah same thing, with Qwen3.6-27B"
+    }
+  ],
+  "cmt_45388": [
+    {
+      "user": "waynehacking8",
+      "created": "2026-06-12T11:23:20Z",
+      "body": "Triaged this end to end. Two findings:\n\n1. **Your exact scenario is already fixed on current main** by #44560 (merged 2026-06-06) — your `0.22.1.dev2+g175a57ed9` build predates it. I ran your deterministic harness verbatim on main @ f1e13f7df9 and it completes (`[scenario] done`). Upgrading past #44560 should unblock you.\n\n2. **The structural hole is still live on main, just harder to reach.** Your diagnosis was very close: the `finished_recving` signal isn't dropped — it's recorded but only *consumed* when the waiting-queue traversal reaches the parked request, and an unschedulable queue head `break`s the traversal. With nothing running, that state is permanent (the parked requests hold the very blocks the head needs). #44560 gates FCFS admission, but under `--scheduling-policy priority` a later high-priority head can still strand a parked async load deterministically (and any post-admission invalidation of the fit invariant reopens the window). Opened #45406 with a minimal fix (only changes behavior when nothing is running — i.e. when the alternative is freezing forever) plus a fail→pass regression test reconstructing the stranding."
+    },
+    {
+      "user": "meffmadd",
+      "created": "2026-06-12T14:02:07Z",
+      "body": "Hi, I ran into the same issue today but **I use no KV-cache offloading connector.** Is this a different class of issue in that case? I am assuming not but every related issue mentions KV cache offloading. **Also, I am still on v0.21.0 so will have to first confirm if upgrading already solves this issue.**\n\n**Additional Context:**\nThe engine repeatedly enters a state where:\n - Running: 0 reqs\n - Waiting: 5-6 reqs (or more)\n - GPU KV cache usage: 0.0%\n - Throughput: 0.0 tokens/s\n\n\n**I use no KV-cache offloading connector:**\n```\n    Command:\n      vllm\n      serve\n    Args:\n      Qwen/Qwen3.5-397B-A17B-GPTQ-Int4\n      --port\n      8000\n      --tensor-parallel-size\n      4\n      --served-model-name\n      Qwen/Qwen3.5-397B-A17B-GPTQ-Int4\n      --disable-uvicorn-access-log\n      --gpu-memory-utilization=0.90\n      --max-num-batched-tokens=8192\n      --max-num-seqs=64\n      --reasoning-parser=qwen3\n      --enable-auto-tool-choice\n      --tool-call-parser=qwen3_coder\n      --quantization=moe_wna16\n      --enable-prefix-caching\n      --mm-encoder-tp-mode=data\n      --mm-processor-cache-type=shm\n      --mm-processor-cache-gb=4\n      --mm-shm-cache-max-object-size-mb=128\n      --structured-outputs-config\n      {\"backend\": \"xgrammar\"}\n```\n\n\nLogs:\n ```\n   11:07:48  Running: 0 reqs, Waiting: 5 reqs, GPU KV cache usage: 0.0%\n   11:07:58  Running: 0 reqs, Waiting: 5 reqs, GPU KV cache usage: 0.0%\n             ← 9-minute gap with no outputs produced →\n   11:16:08  Running: 0 reqs, Waiting: 6 reqs, GPU KV cache usage: 0.0%\n   11:16:18  Running: 0 reqs, Waiting: 6 reqs, GPU KV cache usage: 0.0%\n             ← eventually recovers at 11:17:08, then stalls again at 11:17:58 →\n   11:17:58  Running: 0 reqs, Waiting: 5 reqs, GPU KV cache usage: 0.0%\n   11:18:08  Running: 0 reqs, Waiting: 5 reqs, GPU KV cache usage: 0.0%\n             ← 9-minute gap →\n   11:27:08  Running: 6 reqs, Waiting: 1 reqs, GPU KV cache usage: 8.9%\n ```\n\n<img width=\"2824\" height=\"600\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/3550af46-5035-4894-b86b-5cfb10bae8d4\" />\n\n\nSome hours later:\n\n<img width=\"1438\" height=\"696\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/08fe6379-f69d-41e0-bce5-28f5323f4119\" />\n\n`kubectl top`:\n\n```\nNAME                                                 CPU(cores)   MEMORY(bytes)\nllm-d-modelservice-qwen3.5-decode-7d57c7d79f-csfww   4588m        26910Mi\n\nNAME                                                 CPU(cores)   MEMORY(bytes)\nllm-d-modelservice-qwen3.5-decode-7d57c7d79f-mjksc   4592m        26672Mi\n```"
+    },
+    {
+      "user": "waynehacking8",
+      "created": "2026-06-12T14:14:12Z",
+      "body": "@meffmadd Likely a different mechanism, worth pinning down. The class this issue (and #45406) covers needs a KV connector by construction: the permanently-stuck state requires requests parked in `WAITING_FOR_REMOTE_KVS` holding blocks while invisible to preemption — without a connector no request ever enters that status, so something else must be holding (or failing to free) blocks in your case.\n\nThe same outward signature (`Running: 0 reqs, Waiting: N` forever) can come from other holders. To triage yours, could you share:\n1. vLLM version + the full serve flags (especially: `--scheduling-policy`, prefix caching on/off, async scheduling, spec decode, LoRA)?\n2. The periodic stats log lines around the stall (the `Engine ... Running/Waiting/GPU KV cache usage` lines) — **GPU KV usage at stall time is the key discriminator**: ~0% suggests stranded/leaked block references; ~100% suggests a head request whose full-sequence reservation can never fit (different bug, possibly an admission-validation gap).\n3. Rough prompt lengths vs your KV budget (`max_model_len`, `gpu_memory_utilization`) — does the stall correlate with one unusually long request arriving?\n\nIf you have a repro I can run on a single GPU, post it and I'll dig in — I have the scheduler instrumentation from this investigation still set up."
+    },
+    {
+      "user": "Rishi-Dave",
+      "created": "2026-06-12T14:28:29Z",
+      "body": "Root-cause: `vllm/v1/core/sched/scheduler.py` — the unconditional `break` at line 781 prevents `WAITING_FOR_REMOTE_KVS` promotions when a plain `WAITING` request blocks allocation.\n\n**Deadlock sequence:**\n\n1. Req B1 matches CPU cache, `allocate_slots` succeeds, status → `WAITING_FOR_REMOTE_KVS`, consuming ~1 249 of 2 048 GPU blocks.\n2. Req A1 also has a CPU hit. `_inflight_prefill_reserved_blocks()` now includes B1's reserved blocks. With `scheduler_reserve_full_isl=True` (default), A1's full sequence (~1 600 blocks) cannot fit — `allocate_slots` returns `None`. A1 stays `WAITING`.\n3. Every step: FCFS places A1 before B1 in `skipped_waiting`. A1 is plain `WAITING`, so the blocked-status promotion check is skipped; `allocate_slots` fails again → `break` at line 781. B1 is never dequeued; `_try_promote_blocked_waiting_request` is never called.\n\nB1's CPU→GPU transfer completes (`finished_recving_kv_req_ids` is populated) but B1 is never promoted. Engine stalls at `scheduled=0` indefinitely.\n\n**Fix region (line 781):** when the failing entry is plain `WAITING`, continue scanning for `WAITING_FOR_REMOTE_KVS` promotions instead of breaking immediately."
+    },
+    {
+      "user": "meffmadd",
+      "created": "2026-06-12T15:08:21Z",
+      "body": "@waynehacking8 Thanks for the answer. I created a separate issue #45414 if my issue is not related. I have no specific repro except that some users reported a degradation with these configs I shared. I upgraded to v0.22.1 but this is up only ~10 mins."
+    },
+    {
+      "user": "howarlii",
+      "created": "2026-06-13T07:06:31Z",
+      "body": "@waynehacking8 Thanks for your answer. I will try the main branch :)"
+    }
+  ],
+  "cmt_42371": [
+    {
+      "user": "wangddcsu-ui",
+      "created": "2026-07-15T03:55:48Z",
+      "body": "请问这个bug在最新版的vllm上已经解决 了吗？我应该是遇到了一样的现象，我跟你用的相同的模型，(APIServer pid=27890) INFO 07-15 10:30:51 [loggers.py:271] Engine 000: Avg prompt throughput: 7296.7 tokens/s, Avg generation throughput: 0.9 tokens/s, Running: 2 reqs, Waiting: 2 reqs, GPU KV cache usage: 3.9%, Prefix cache hit rate: 2.5%, External prefix cache hit rate: 0.0%\n\nExternal prefix cache hit rate: 永远是0.0%"
+    }
+  ],
+  "cmt_53726": [
+    {
+      "user": "meowsigma",
+      "created": "2026-08-26T22:34:05Z",
+      "body": "## Update — root cause localized and bypass patch validated\n\nAfter extensive bisection we narrowed the defect to CUDA-graph replay during the MTP draft autoregressive forward path, interacting with GDN recurrent state, when crossing the ~23.6K computed-token boundary.\n\n- Attention backend is not implicated — reproduced on FlashInfer, FLASH_ATTN, and TRITON.\n- Request concurrency is not required — reproduces at max-num-seqs=1.\n- All known bounds/ordering fixes were present and insufficient.\n- `CUDA_LAUNCH_BLOCKING=1` masks the race; sanitizer cannot reach it.\n\nA surgical change forcing the MTP draft proposer to dispatch with `cudagraph_mode=NONE` (while the target model_runner retains `PIECEWISE`) eliminates the failure: 20/20 boots at seqs=1, 3/3 at seqs=4, 51,000 generated tokens across 34 boundary-crossing rounds, 0 IMA, ~83-88 tok/s.\n\nThe defect appears specific to the V1 runner graph-replay path for the MTP draft sub-step. The V2 runner may not exhibit this signature.\n\nHappy to share the patch and reproducer driver privately. Will open a focused PR after sanitized regression test is finalized."
+    },
+    {
+      "user": "swesty",
+      "created": "2026-08-26T23:35:06Z",
+      "body": "Second architecture with this signature, plus the one piece of evidence your update says you can't get: **kernel-side `Xid` records**, including the access type.\n\nYou note `CUDA_LAUNCH_BLOCKING=1` masks the race and compute-sanitizer can't reach the region. On this rig the NVRM log is readable and has captured every fault. It doesn't name the faulting instruction, but it does say what kind of access it was.\n\n### Environment\n\n- vLLM `v0.27.1`, **GB10 (DGX Spark), `sm_121a`**, driver 580.173.02\n- Hybrid GDN **Qwen3.6-35B-A3B**, NVFP4 / compressed-tensors, native MTP head\n- `--speculative-config {\"method\":\"mtp\",\"num_speculative_tokens\":3} --async-scheduling --kv-cache-dtype fp8 --mamba-cache-mode align --max-num-batched-tokens 8192 --max-num-seqs 4`, FlashInfer, prefix caching on\n- Same exit-0 behaviour you describe: the API server shuts down gracefully and exits **0**, so our process supervisor never treats it as a crash and the instance just stays down.\n\n### Six Xid records\n\nAll six faults on this host, from `/var/log/kern.log`. **Every one is `Xid 31` (MMU fault). Four are writes, two are reads.**\n\n```\n08-04 06:43:55 Xid 31 GPC1 GPCCLIENT_T1_9  @ 0xede3_7fa00000  FAULT_PDE ACCESS_TYPE_VIRT_READ\n08-19 19:41:00 Xid 31 GPC3 GPCCLIENT_T1_7  @ 0xee7a_a0203000  FAULT_PDE ACCESS_TYPE_VIRT_WRITE\n08-20 06:33:22 Xid 31 GPC2 GPCCLIENT_T1_6  @ 0xe1cd_21004000  FAULT_PTE ACCESS_TYPE_VIRT_WRITE\n08-25 03:14:41 Xid 31 GPC0 GPCCLIENT_T1_0  @ 0xf9b0_80212000  FAULT_PDE ACCESS_TYPE_VIRT_WRITE\n08-25 17:12:22 Xid 31 GPC0 GPCCLIENT_T1_8  @ 0xeead_22000000  FAULT_PDE ACCESS_TYPE_VIRT_READ\n08-26 12:54:45 Xid 31 GPC2 GPCCLIENT_T1_11 @ 0xf69b_21004000  FAULT_PTE ACCESS_TYPE_VIRT_WRITE\n```\n\nThree things I'd flag, in decreasing order of confidence:\n\n1. **The majority are writes.** Any hypothesis that only explains a bad *read* — bounding a lookup index, for instance — doesn't cover four of these six.\n2. **The 08-19 fault is a write, and it ran with `align` mode off entirely** (`--mamba-cache-mode` never passed, `enable_prefix_caching=False`; the flag appears zero times in that engine's log). So whatever this is, it does not require the align-mode precopy path.\n3. **Possibly nothing:** two of the six fault addresses share their low 24 bits — `0xe1cd_21004000` and `0xf69b_21004000`. With n=6 that could easily be coincidence, but given your \"same `num_computed_tokens=23615` twice\" observation about a structural boundary, it seemed worth putting in front of you rather than sitting on.\n\n### Where our repro differs from yours\n\nSame signature, different numbers, which may help bound the \"structural boundary\" idea:\n\n| | yours | ours |\n|---|---|---|\n| GPU | RTX 3090, sm86 | GB10, sm_121a |\n| model | GDN 27B, W4A16 Marlin | GDN 35B-A3B, NVFP4 |\n| `num_computed_tokens` at fault | ~23.6K–26.2K | **15,359** |\n| output tokens at fault | ~400–3400 | 158, and 3 of 6 faults were at the *first* output token |\n| concurrency | reproduces at seqs=1 | most recent fault at `num_running_reqs=1` |\n\nSo the boundary isn't at a fixed token count across rigs. Both of us see it independent of concurrency.\n\n### On the fixes\n\nIndependently of you, we built #53613 as the only delta on `v0.27.1`, verified the hoist live in the running container, and ran the crashing config deliberately: **faulted at 1 h 30 m / 158 requests**. Posted in more detail on that PR. That's a second negative for the ordering fix, matching your \"all known bounds/ordering fixes were present and insufficient\".\n\nYour `cudagraph_mode=NONE` result on the draft proposer is a much stronger piece of evidence than anything we have — 51,000 tokens across 34 boundary crossings is well past our historical inter-fault gaps. We'll test it here once our current soak reports, and I'll post the GB10 result either way.\n\nHappy to attach full engine logs, scheduler dumps, or the raw NVRM lines."
+    },
+    {
+      "user": "swesty",
+      "created": "2026-08-27T11:28:56Z",
+      "body": "Correction to my config listing above: **we do not pass `--async-scheduling`.** It is on anyway, by default.\n\n`vllm/config/vllm.py` resolves an unset value rather than leaving it off:\n\n```python\nelif self.scheduler_config.async_scheduling is None:\n    # Enable async scheduling unless there is an incompatible option.\n```\n\n`SchedulerConfig.async_scheduling` defaults to `None`, so on `v0.27.1` you get async scheduling unless something specific rules it out. On our rig the flag appears **zero times** in the engine log and is absent from `/proc/1/cmdline`, and it is still active. Two independent confirmations:\n\n- `prepare_inputs_event` is created *only* under `if self.use_async_scheduling` (`gpu_model_runner.py:738-743`), and our fault traceback executed `self.prepare_inputs_event.record()` at line 3885.\n- The resolution above.\n\nTwo things worth passing on:\n\n1. **\"Disable async scheduling\" is not the same as omitting the flag** on this version — it needs an explicit false. Anyone reading a config listing (including mine) and concluding a rig had it off may be wrong. You have already reported it crashes with it off, so this probably doesn't change your conclusion, but it does change what \"off\" requires.\n\n2. **`num_accepted_tokens_event` is not an async-scheduling tell.** It is created under `if self.num_spec_tokens:` — speculative decoding. I had used its presence as evidence for async scheduling, which was wrong; `prepare_inputs_event` is the one gated on it. Relevant if anyone is inferring configuration from which events exist, as I was.\n\nNet effect on the data point I posted: unchanged. GB10 `sm_121a`, six faults, four of them writes, and async scheduling was never explicitly enabled on this rig at any point."
+    },
+    {
+      "user": "erdholion",
+      "created": "2026-08-28T09:44:26Z",
+      "body": "Adding to the mechanism space: #50729 (\"[Bugfix][Mamba] Fix overlapping state copy race\", member-authored, merged Aug 17) **is not in v0.27.1 or v0.28.0** (missed the branch cut) — it fixes overlapping src/dst copies in the speculative-decode conv-state shift, where parallel memcpy provides no memmove ordering.\n\nTwo reasons it fits the evidence here better than read-side hypotheses:\n1. @swesty's Xid 31 breakdown is 4 writes / 2 reads — an overlapping-copy race produces bad **writes**, which pure read-bounding fixes can't explain.\n2. It reproduces at concurrency 1 and with align mode off — the racing copies are within a single request's state shift, no cross-request or precopy path required.\n\nSuggestion for the soak matrix: one arm on a #50729-containing build (`v0.28.1rc0` tag or main), crashing config otherwise unchanged. A clean soak there would be the first positive signal this cluster has had; a fault would rule the copy race out and that negative is just as valuable. Related same-lineage fixes: #53077, #54076."
+    },
+    {
+      "user": "erdholion",
+      "created": "2026-08-30T21:59:30Z",
+      "body": "Telemetry from a third setup, same class: Qwen3.8-27B hybrid GDN, ModelOpt NVFP4, native MTP head, fp8 KV, FlashInfer, PIECEWISE, RTX 5090 (sm_120), v0.27.1, async scheduling at default (on), MTP k=2 at the time.\n\n- Rate: 2 crashes in ~9h of heavy agentic traffic (~1 per 5h).\n- Sites: one `cudaErrorIllegalAddress` in async copy sync at 67,200 computed tokens, **single stream**; one during a 115.6k-token prefill with a 113.6k prefix-cache hit — a prefill-site instance, which the mid-decode-only pattern in this thread doesn't cover and which may bear on whether prefix-cache state is involved.\n- Same rig on v0.25.1 crashed far faster (2 in 35 min) with a *different* signature (misaligned address in the MTP spec path, matching #52540) — so 0.27.1 changed the failure mode, not just the rate.\n\nOne honest non-result: we've run `--no-async-scheduling` since 08-26 (for the #53919 cluster) and haven't seen the crash since, but our uptime windows have been too intermittent to call that a clean negative."
+    },
+    {
+      "user": "TnzGit",
+      "created": "2026-09-07T06:19:36Z",
+      "body": "Additional TP=2 / SM75 data point, including a counterexample to the\ndraft-`cudagraph_mode=NONE` workaround above.\n\n### Environment\n\n- 2x RTX 2080 Ti 22 GiB (`sm75`), TP=2, NVLink\n- Qwen3.8-family hybrid GDN 27B, ModelOpt NVFP4 / compressed-tensors,\n  native MTP head, MTP k=5\n- FP8 KV, `max_num_seqs=1`, `max_num_batched_tokens=2048`, PIECEWISE CUDA\n  Graph, target capture sizes `[6, 2048]`\n- Prefix caching and `mamba_cache_mode=align` in the original configuration\n- Tree contains #50021/#53613-class guards/order fixes plus a runner-owned\n  accepted-count D2H buffer equivalent to the #51599 direction\n\nI reconstructed a sanitized exact replay from an application session. The\npayload is approximately 15.9K prompt tokens, includes a tools schema and a\ntool result, and reproduces without concurrency. The failure is very stable\nnear:\n\n```\nnum_computed_tokens=[16315]\nnum_output_tokens=[439]\nnum_scheduled_tokens=6\nscheduled_spec_decode_tokens=[-1, -1, -1, -1, -1]\nKV usage ~= 16.1%\n```\n\nBoth TP ranks report Xid 31 / `FAULT_PDE ACCESS_TYPE_VIRT_WRITE`; several\nfault addresses end in the same low bits (`...603000`). This is not OOM.\n\n### Stage localization\n\nI added opt-in synchronization checkpoints around the target forward, target\nlogits, rejection sampling, hybrid-state update, MTP draft, and bookkeeping.\nThe first four completed; the first synchronization that observed the IMA was\nthe **MTP draft** checkpoint on both ranks.\n\nThe following A/B results are repeatable on this machine:\n\n1. Entire engine eager: survives the replay.\n2. Target remains PIECEWISE, but the MTP/draft proposer is forced to dispatch\n   with `cudagraph_mode=NONE`: **still faults at the same ~439-token boundary**.\n3. Target and draft graphs remain enabled, but each MTP model forward is\n   explicitly retired before the proposer reuses its persistent inputs for\n   the next draft iteration: **13/13 exact replays passed**, including several\n   runs that reached 3,000 or 4,096 completion tokens, with no new Xid.\n\nThe experimental guard is deliberately narrow:\n\n```python\nif (\n    safe_mode\n    and self.method == \"mtp\"\n    and cudagraph_runtime_mode != CUDAGraphMode.NONE\n):\n    torch.cuda.synchronize(self.device)\n```\n\nIt is called immediately after the first-pass MTP `self.model(...)` and after\neach subsequent autoregressive MTP `self.model(...)`, before the next\niteration can rewrite persistent proposer inputs.\n\nThis is diagnostic/compatibility code rather than the ideal upstream fix. It\nsuggests that, at least on this SM75 TP=2 path, the defect is not merely “the\ndraft graph exists”; it is a missing completion dependency between successive\nMTP forwards and persistent-input reuse. A stream/event dependency should be\npreferable to a host/device-wide synchronization once the actual producer\nstream is identified.\n\nObserved rolling generation throughput with this guard remained roughly\n50–75 tok/s on the replay (draft throughput around 95 tok/s), so there was no\nobvious collapse, although this was a stability soak rather than a strict\nsame-output performance benchmark.\n\nI can provide a focused patch/reproducer shape if useful.\n"
+    },
+    {
+      "user": "swesty",
+      "created": "2026-09-08T00:58:38Z",
+      "body": "A GB10 data point that lines up with your arm 3, and a note on your arm 2 that may save someone else a soak.\n\n**Environment.** 1x NVIDIA GB10 (sm_121), TP=1, vLLM v0.27.1. Qwen3.6-35B-A3B NVFP4 (W4A4) hybrid GDN, native MTP head at k=3, fp8 KV, `max_num_seqs=4`, PIECEWISE, prefix caching + `mamba_cache_mode=align`, FLASHINFER_CUTLASS MoE. Thirteen faults to date, all Xid 31, 9x `FAULT_PDE` / 4x `FAULT_PTE`, 7 writes / 6 reads. Inter-fault time on this rig spans 8 minutes to 77 hours, so single runs here carry very little weight and I try not to claim rate from them.\n\n**Your arm 3 at coarser granularity.** I have been running `CUDA_LAUNCH_BLOCKING=1` as a global environment variable on the rig, which synchronizes every launch and is therefore a superset of your per-MTP-forward synchronization. That arm ran **99 h 52 m, 4,731 requests, 0 illegal memory accesses and 0 Xid entries**, with MTP acceptance live and healthy throughout (mean acceptance length 3.21-3.33, per-position 0.85 / 0.71 / 0.64). For comparison, the prior mean time-to-fault on that configuration was hours, and my fault 13 landed 29 minutes into a run.\n\nI lifted the flag a few hours ago and the same image is now running the control, single variable, same production traffic. So within days I should have a with/without pair on the same rig. Before your comment I considered a continued null largely uninterpretable; now it is a prediction with a named mechanism behind it, which is a much better position to be in.\n\nI want to be straight about the limit of my own arm, though: `CUDA_LAUNCH_BLOCKING=1` is device-wide and would mask any asynchronous fault, so it has exactly the masking-versus-fixing ambiguity you flag for your own guard. Your arm 2 is the clean single-variable result in your set, and it is the negative one.\n\n**On arm 2, a warning for anyone trying to reproduce it.** Forcing the draft proposer to `cudagraph_mode=NONE` was the next experiment queued in my own notes, taken from the earlier 51,000-token result in this issue. Your counterexample retires it before I spent rig time on it, which I appreciate.\n\nOne trap worth naming: in v0.27.1, `SpeculativeConfig.enforce_eager` is never read. I set it, confirmed from the running container that draft graphs were still being captured, and the arm proved nothing. Anyone who tries to disable draft graphs through that field will get a silent null rather than your arm 2, and may conclude the opposite of what you found.\n\n**The shape is present unchanged on my side.** Read out of my running v0.27.1 container, `vllm/v1/spec_decode/llm_base_proposer.py` (`eagle.py` is a thin shim over it):\n\n```python\nself.input_ids     = torch.zeros(...)   # :167  preallocated once\nself.hidden_states = torch.zeros(...)   # :202\n...\n# inside the autoregressive draft loop:\n# copy inputs to buffer for cudagraph   # :712  (the comment is verbatim)\nself.input_ids[:batch_size]     = input_ids        # :713\nself.hidden_states[:batch_size] = hidden_states    # :714\nwith set_forward_context(..., cudagraph_runtime_mode=cudagraph_runtime_mode, ...):\n    ret_hidden_states = self.model(**model_kwargs) # :747\n# the next iteration rewrites those same buffers, with no event and no wait between\n```\n\n`self.method == \"mtp\"` is at `:1008`, so your predicate applies unchanged. Since this is Python-level ordering rather than a kernel, the sm75-to-sm121 gap offers no protection, which is part of why your result reads as relevant to me despite the hardware distance.\n\n**Why my instrumentation missed it.** I have been running device-side probes for several weeks: block-index bounds, accepted-count range, pointer identity across graph replays, and geometry at the align copy boundary. The most recent 99-hour run reported 30 million in-range state indices, 8 million in-range accepted-count values, and **9.9 million graph replays with zero pointer mismatches**. On your mechanism, stable pointers are the premise rather than evidence against it, and every one of those probes measures addresses or ranges rather than buffer contents. They are structurally blind to it. That is worth saying plainly, because a clean probe pane looks like exoneration and is not.\n\n**Yes to the focused patch**, please. I would run it on the same image the control is running now, as its own single-variable layer, and report the result either way. If it holds here it would be both a diagnosis and a usable mitigation, since it respects the constraints I care about: MTP, prefix caching, target CUDA graphs and the CUTLASS MoE backend all stay on. Your reported 50-75 tok/s is also encouraging next to the roughly 30% per-stream cost I pay for launch blocking.\n\nOne question, if you have the data. When you retired each MTP forward, did you ever try narrowing further, to a synchronization only before the persistent-input write rather than after every `self.model(...)`? I ask because it would separate \"the previous forward must complete\" from \"the device must be quiet\", and the first is the claim your explanation actually needs.\n"
+    },
+    {
+      "user": "cjmckenna",
+      "created": "2026-09-18T23:22:57Z",
+      "body": "**Field report: sm86, k=2, vLLM 0.28.0 — 21 h unmasked, no IMA. Bounded negative, not a clean bill.**\n\nSame rig class as the OP (single RTX 3090, syv-ai/HyperQwen — formerly qwen38-27b-rtx3090 — patch series, fp8 KV, FlashInfer forced, MTP, prefix caching + chunked prefill). Posting because every data point in this thread is 0.27.1 or 0.26.0, and because nobody has an sm86 k=2 arm.\n\n**Config**\n\n```\nGPU            RTX 3090 (sm86), driver 595.84\nvLLM           0.28.0  (torch 2.13.0+cu130, CUDA 13.0)\nHyperQwen      231592a, 36-patch series\nmodel          Qwen3.8-27B W4A16-AutoRound (\"-fast\" variant)\nspec           method=mtp, num_spec_tokens=2, draft_sample_method=probabilistic\nattention      FlashInferBackend (forced: FLASH_ATTN and TRITON_ATTN both refuse fp8 KV on sm86)\nkv cache       fp8 (e4m3), --mamba-ssm-cache-dtype float16\ncudagraph      PIECEWISE\nscheduling     --async-scheduling ON\nctx            --max-model-len 150000, --max-num-seqs 8, --max-num-batched-tokens 2048\ngpu-util       0.97   (KV pool 201,295 tok, 1.34x concurrency at 150k)\nenv            VLLM_USE_FLASHINFER_SAMPLER=0\n               CUDA_LAUNCH_BLOCKING is NOT set  <- unmasked arm\n```\n\n**Result — 21 h 10 m continuous, single process, no restarts**\n\n```\nAcceleratorError / illegal memory access in serve log : 0\nXid entries (journalctl -k, since process start)      : 0\nNVRM / nvidia errors                                  : 0\n\nrequests finished           : ~925  (922 stop, 3 length)\ndrafts                      : ~112,000\ndraft tokens                : ~224,000\naccepted draft tokens       : ~178,000   (79.5% acceptance)\npreemptions                 : 1\nmax prompt_tokens observed  : 125,460\n```\n\n**Exposure in the reported fault window.** meowsigma reports faults at `num_computed_tokens` ≈ 23.6K–26.2K; liuhaibin0528 (HyperQwen #34) at 28,863 and 34,111. Of the finished requests in this window, **11.6% had prompt_tokens in 23k–35k**, and none faulted. Generation length distribution: median 120, p90 417, p99 ~6,000, max 8,192 — so this is a long-prompt/short-output shape, not a long-decode shape. Traffic is real application load, not synthetic benchmarking.\n\n**What this is worth, honestly.** 21 h is roughly half liuhaibin0528's ~40 h inter-fault interval and a fifth of swesty's window, and per-request decode here is short. Against a fault with two observations in 80 h, this is a bounded negative, not evidence of absence. Taking mhenrichsen's framing from the sibling thread: absence over a fraction of the inter-crash interval is not a clean bill. I'll re-post if it faults, and again at a longer horizon if it does not.\n\n**On erdholion's soak request.** You asked for an arm on a #50729-containing build. This is not that — #50729 is absent from 0.28.0, and it is not in the HyperQwen patch series either (checked all 36 patches). So this arm does not test the copy race. What it does establish: **0.28.0 alone neither fixes nor visibly worsens this class on sm86**, and the fault does not reproduce readily at k=2 on this hardware within 21 h.\n\n**On k.** meowsigma reported k∈{1,2} vs k=3 as small-sample noise on his sm86 box. erdholion's k=2 point is sm120 and it crashed. This is the first sm86 k=2 arm I can find in either thread, and it is clean so far — which I read as \"k=2 is not obviously protective,\" consistent with meowsigma, rather than as a mitigation.\n\n**Two config deltas from the OP that may or may not matter**, flagged because they are the only things I can see that differ:\n\n1. **Driver 595.84** vs the OP's 595.71.05.\n2. `VLLM_USE_FLASHINFER_SAMPLER=0` — FlashInfer is still the attention backend, but its sampler is off. Given the fault surfaces in flashinfer `build()` paths, someone may want to rule this in or out; I did not set it as a mitigation and have not A/B'd it.\n\nA single-variable backend A/B is not available on this hardware: on sm86 with fp8 KV, FLASH_ATTN refuses (\"requires FA3 on SM90\") and TRITON_ATTN refuses (\"native FP8 (fp8e4nv) requires SM89+\"), so FlashInfer is the only backend. The escape is `--attention-backend=TRITON_ATTN --kv-cache-dtype=int8_per_token_head`, which is a two-variable change and costs ~25% wall (and −44% prefill at 60K on this checkpoint), so I have not taken it.\n\nIf a specific arm would be useful, I can likely run it — this is a stable long-running deployment on real traffic, so I can hold a config and report back.\n"
+    }
+  ],
+  "cmt_57680": [
+    {
+      "user": "twu3202",
+      "created": "2026-09-19T11:14:08Z",
+      "body": "Couldn't reproduce this on non-CC hardware — it came out the other way.\n\nOne RTX 6000 Ada (SM89), no CC, same two stacks as yours: 0.26.0 / torch 2.11 / triton 3.6 and 0.29.0 / torch 2.13 / triton 3.7.1, both CUDA 13.0. `Qwen3.6-35B-A3B-FP8` cut to 12 of 40 layers with dummy weights, 8192 context, 512-token `ignore_eos` at concurrency 1. The versions alternated round by round.\n\n| round | 0.26.0 | 0.29.0 |\n|---|---|---|\n| 1 | 94.7 tok/s | 122.7 tok/s |\n| 2 | 97.4 | 122.6 |\n| 3 | 92.2 | 120.1 |\n\n0.29.0 came out about 1.3x faster. No bimodality either: 1.10x spread over 12 single-stream reps, 2% stdev.\n\nDifferent GPU, fewer layers, dummy weights and a much shorter context, so none of this shows the bug isn't real.\n\nIt does make CC mode worth a look, since it isn't on your list yet. Copies dropping to 0.61x the count at 5.14x the cost each looks like small transfers being merged into fewer large ones, which is usually a win but maybe not through SEV-SNP bounce buffers. The cleanest test is the same A/B with CC off. If the host won't allow that, measuring pinned H2D/D2H bandwidth in the VM against a normal H100 would answer it quickly.\n"
+    }
+  ],
+  "cmt_57562": [
+    {
+      "user": "debanshd",
+      "created": "2026-09-18T13:00:04Z",
+      "body": "Hi, I am investigating this issue and working on a fix with unit tests. I will submit a pull request once verification is complete."
+    }
+  ],
+  "cmt_55617": [
+    {
+      "user": "coderabbitai[bot]",
+      "created": "2026-09-06T23:37:09Z",
+      "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n\n[![Review Change Stack](https://storage.googleapis.com/coderabbit_public_assets/review-stack-in-coderabbit-ui.svg)](https://app.coderabbit.ai/change-stack/vllm-project/vllm/pull/55617)\n\n<!-- review_stack_entry_end -->\n<!-- walkthrough_start -->\n\n<details>\n<summary>📝 Summary</summary>\n\n<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n\n## Summary by CodeRabbit\n\n* **Diagnostics**\n  * Added detailed logging for KV cache concurrency calculations, including cache configuration, request block counts, and the resulting concurrency value.\n\n<!-- end of auto-generated comment: release notes by coderabbit.ai -->\n## Walkthrough\n\nThe KV-cache concurrency calculation now logs speculative-decoding and Mamba settings, KV-cache group details, per-request block usage, and the computed maximum concurrency.\n\n### Changes\n\n**KV cache concurrency diagnostics**\n\n|Layer / File(s)|Summary|\n|---|---|\n|**Concurrency calculation diagnostics** <br> `vllm/v1/core/kv_cache_utils.py`|`get_max_concurrency_for_kv_cache_config` logs speculative-token and Mamba settings, KV-cache group details, per-request block counts, and the final concurrency calculation.|\n\n**Estimated code review effort:** 1 (Trivial) | ~5 minutes\n\n<!-- final_review_risk_start -->\n**Merge Risk:** _🔵 Low_ · up to `fb1ba`\n<!-- final_review_risk_coverage:{\"sourceCommitId\":\"fb1baa9dd61ae01baf4f40ebfd50935f86605c1a\",\"coveredCommitId\":\"fb1baa9dd61ae01baf4f40ebfd50935f86605c1a\",\"kind\":\"reviewed\"} -->\n\nThis change adds KV-cache concurrency diagnostics, but aggregated Mamba cache configurations can omit their speculative-block setting from the logs. Runtime scheduling behavior is unchanged, though the missing value can impede diagnosis of affected deployments.\n<!-- final_review_risk_end -->\n\n**Suggested reviewers:** `lucaswilkinson`, `zjy0516`, `wzhao18`\n\n</details>\n\n<!-- walkthrough_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n\n<details>\n<summary>🚥 Pre-merge checks | ✅ 4 | ❌ 1</summary>\n\n### ❌ Failed checks (1 warning)\n\n|      Check name     | Status     | Explanation                                                                                                                                                                                               | Resolution                                                                                                                                                                                                                |\n| :-----------------: | :--------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |\n| Linked Issues check | ⚠️ Warning | The changes add diagnostic logging, but they do not fix the scheduler concurrency limitation required by `#55533`. The PR does not show that all active sequences are scheduled under MTP at batch sizes o… | Implement the scheduler or cache-accounting fix required by `#55533`. Add tests that verify full-batch MTP scheduling, acceptance, throughput, and output correctness for the affected 27B-class hybrid GDN configurations. |\n\n<details>\n<summary>✅ Passed checks (4 passed)</summary>\n\n|         Check name         | Status   | Explanation                                                                                                                                                                                               |\n| :------------------------: | :------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n|         Title check        | ✅ Passed | The title clearly identifies the affected hybrid GDN models, MTP, and the approximately three-sequence concurrency limitation described by the linked issue.                                              |\n|      Description check     | ✅ Passed | The description identifies issue `#55533` and states that diagnostic logging was added for mamba cache mode and concurrency. It is related to the changeset, although the test plan and results are incomp… |\n| Out of Scope Changes check | ✅ Passed | The diagnostic logging changes target the cache-mode and concurrency behavior described in `#55533`. No unrelated code changes are present.                                                                 |\n|     Docstring Coverage     | ✅ Passed | Docstring coverage is 100.00% which is sufficient. The required threshold is 80.00%. Docstring coverage is scoped to functions touched by this diff. Analyzed 1 functions across 1 files.                 |\n\n</details>\n\n<details>\n<summary>Full details: Linked Issues check</summary>\n\n**Explanation**\n\nThe changes add diagnostic logging, but they do not fix the scheduler concurrency limitation required by `#55533`. The PR does not show that all active sequences are scheduled under MTP at batch sizes of 4 or greater.\n\n</details>\n\n</details>\n\n<!-- pre_merge_checks_walkthrough_end -->\n\n- [ ] <!-- {\"checkboxId\":\"585bb3f6-faf5-4dbf-96d2-74e382adf19a\"} --> Fix all pre-merge checks with AI\n<!-- tips_start -->\n\n---\n\nThanks for using [CodeRabbit](https://coderabbit.ai?utm_source=oss&utm_medium=github&utm_campaign=vllm-project/vllm&utm_content=55617)! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.\n\n<details>\n<summary>❤️ Share</summary>\n\n- [X](https://twitter.com/intent/tweet?text=I%20just%20used%20%40coderabbitai%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20the%20proprietary%20code.%20Check%20it%20out%3A&url=https%3A//coderabbit.ai)\n- [Mastodon](https://mastodon.social/share?text=I%20just%20used%20%40coderabbitai%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20the%20proprietary%20code.%20Check%20it%20out%3A%20https%3A%2F%2Fcoderabbit.ai)\n- [Reddit](https://www.reddit.com/submit?title=Great%20tool%20for%20code%20review%20-%20CodeRabbit&text=I%20just%20used%20CodeRabbit%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20proprietary%20code.%20Check%20it%20out%3A%20https%3A//coderabbit.ai)\n- [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fcoderabbit.ai&mini=true&title=Great%20tool%20for%20code%20review%20-%20CodeRabbit&summary=I%20just%20used%20CodeRabbit%20for%20my%20code%20review%2C%20and%20it%27s%20fantastic%21%20It%27s%20free%20for%20OSS%20and%20offers%20a%20free%20trial%20for%20proprietary%20code)\n\n</details>\n\n\n<sub>Comment `@coderabbitai help` to get the list of available commands.</sub>\n\n<!-- tips_end -->"
+    },
+    {
+      "user": "mergify[bot]",
+      "created": "2026-09-12T06:15:32Z",
+      "body": "This pull request has merge conflicts that must be resolved before it can be\nmerged. Please rebase the PR, @khushali9.\n\nhttps://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork\n"
+    }
+  ],
+  "54371": {
+    "title": "[Qwen4Exp] Support UVA PLE-offload and Engram tensor parallelism",
+    "state": "closed",
+    "created": "2026-08-29T18:32:53Z",
+    "body": "## Purpose\r\n\r\nAdd UVA-based PLE offload and Engram tensor parallelism (ETP) for Qwen3.8-Flash-Next.\r\n\r\n`--engram-config` controls PLE weight storage and embedding sharding:\r\n\r\n- `cpu_offload=true` stores each local PLE weight shard in pinned CPU memory. The GPU reads the required rows directly through CUDA Unified Virtual Addressing (UVA), using a dedicated CUDA stream. Offload can also be enabled with `VLLM_PLE_CPU_OFFLOAD=1` when `cpu_offload` is omitted; an explicit `cpu_offload` value takes precedence.\r\n- `cpu_offload=false` keeps PLE weights on the GPU.\r\n- `embedding_across_dp=false` uses `ETP=TP`, keeping a separate TP-sharded PLE table in each DP replica.\r\n- `embedding_across_dp=true` uses `ETP=TP×DP`, sharding the PLE table across all DP replicas.\r\n\r\nOffload and cross-DP sharding can be enabled independently. Both options default to false. \r\n\r\n## Design\r\n\r\nThe PLE embedding implementation is organized into three abstraction levels:\r\n\r\n\r\n```mermaid\r\nflowchart TB\r\n    subgraph Level1[\"Level 1 — N-gram embedding semantics\"]\r\n        NGram[\"Qwen4ExpNGramEmbedding<br/>computes request-dependent n-gram IDs<br/>and orchestrates forward/prefetch\"]\r\n    end\r\n\r\n    subgraph Level2[\"Level 2 — device-specific storage and execution\"]\r\n        Device[\"Qwen4ExpPLEDeviceEmbedding<br/>GPU-resident weights<br/>resident forward path<br/>prefetch is a no-op\"]\r\n\r\n        Pinned[\"Qwen4ExpPinnedHostEmbedding<br/>pinned CPU weights<br/>UVA lookup on a side stream<br/>prefetch and finalization\"]\r\n    end\r\n\r\n    subgraph Level3[\"Level 3 — common embedding and weight-format foundation\"]\r\n        Base[\"Qwen4ExpPLEEmbedding<br/>common backend interface<br/>ETP sharding, DP ID gathering<br/>and local-row selection\"]\r\n\r\n        Method[\"Qwen4ExpPLEEmbeddingMethod<br/>weight creation, lookup format<br/>and dequantization interface\"]\r\n\r\n        BF16[\"Qwen4ExpPLEUnquantizedEmbeddingMethod<br/>BF16 embedding\"]\r\n        FP8[\"Qwen4ExpPLEFp8EmbeddingMethod<br/>FP8 embedding and global scale\"]\r\n    end\r\n\r\n    NGram -->|\"owns one backend selected at initialization\"| Device\r\n    NGram -->|\"owns one backend selected at initialization\"| Pinned\r\n\r\n    Device -.->|\"inherits\"| Base\r\n    Pinned -.->|\"inherits\"| Base\r\n\r\n    Base -->|\"delegates weight-format behavior\"| Method\r\n    Method --> BF16\r\n    Method --> FP8\r\n```\r\n\r\n- `Qwen4ExpNGramEmbedding` contains the model-specific n-gram computation and coordinates `start_prefetch()` and `forward()`.\r\n- `Qwen4ExpPLEDeviceEmbedding` and `Qwen4ExpPinnedHostEmbedding` encapsulate device-specific allocation and execution. The pinned-host backend implements the asynchronous UVA path, while the device backend retains the resident lookup path.\r\n- `Qwen4ExpPLEEmbedding` provides the shared embedding contract and ETP logic. It delegates weight-format-specific creation and dequantization to  `Qwen4ExpPLEEmbeddingMethod`, with separate BF16 and FP8 implementations.\r\n\r\n## Not a duplicate\r\n\r\nSearched the open PRs for [Qwen4Exp PLE offload](https://github.com/vllm-project/vllm/pulls?q=is%3Apr+is%3Aopen+Qwen4Exp+PLE+offload), and [PLE UVA](https://github.com/vllm-project/vllm/pulls?q=is%3Apr+is%3Aopen+PLE+UVA).\r\n\r\nThere are related PRs, but they use materially different designs:\r\n\r\n- [#53899](https://github.com/vllm-project/vllm/pull/53899) uses a dedicated CPU offload worker and transfers selected rows back to GPU workers. This PR keeps the table in process-local pinned memory and lets the GPU read the required rows directly through UVA, without an offload worker or IPC row transfer.\r\n- [#54129](https://github.com/vllm-project/vllm/pull/54129) uses disk-backed mmap storage to reduce host-memory residency. This PR intentionally keeps the complete local shard pinned in RAM for direct UVA access.\r\n- [#54431](https://github.com/vllm-project/vllm/pull/54431) optimizes ragged n-gram ID generation for the worker-based offload path.\r\n- [#54517](https://github.com/vllm-project/vllm/pull/54517) fuses the PLE compute kernels and is orthogonal to the pinned-table storage, asynchronous UVA lookup, and NP topology introduced here.\r\n\r\n## Test Plan\r\n\r\n```bash\r\npython -m pytest -q tests/models/qwen4_exp/test_ple.py\r\npython -m pytest -q tests/engine/test_arg_utils.py -k engram\r\npython -m pytest -q tests/test_config.py -k engram\r\n\r\ngit diff --check\r\n```\r\n\r\n## End-to-end validation:\r\n\r\nRun Qwen3.8-Flash-Next with TP4, DP2, and MTP3 for all four `--engram-config` combinations:\r\n\r\n| `cpu_offload` | `embedding_across_dp` | Expected PLE storage | Expected ETP topology |\r\n| --- | --- | --- | --- |\r\n| false | false | GPU memory | ETP4, a separate TP-sharded table per DP replica |\r\n| false | true | GPU memory | ETP8, one table sharded across both DP replicas |\r\n| true | false | Pinned CPU memory | ETP4, a separate TP-sharded table per DP replica |\r\n| true | true | Pinned CPU memory | ETP8, one table sharded across both DP replicas |\r\n\r\nFor each combination, verify storage and topology against the table, exercise CUDA Graph capture and replay with uneven DP loads (including an idle replica), and run GSM8K.\r\n\r\n## Test Result\r\n\r\n- Added and updated PLE, Engram configuration, and CLI tests: 50 passed.\r\n- Ruff checks on the PLE, Engram configuration, and communicator files: passed.\r\n- `git diff --check`: passed.\r\n- BF16 TP2/DP1/MTP3 startup and serving with `cpu_offload=true` and `embedding_across_dp=false`: passed.\r\n- Both TP ranks reported BF16 PLE weights on CPU with pinned storage enabled.\r\n- GSM8K: `0.9727` mean accuracy over 1,319 samples.\r\n\r\n## Performance Results\r\n\r\nModel: `Qwen/Qwen3.8-Flash-Next-FP8`. Prefill uses 8K input at concurrency 2; decode uses 1024 output tokens at concurrency 64 with MTP=3. The workloads use synthetic random-token inputs.\r\n\r\nThe `cpu_offload` and `embedding_across_dp` columns correspond to fields in `--engram-config`.\r\n\r\n| `cpu_offload` | `embedding_across_dp` | Parallel Configuration | Prefill tok/s | Raw Decode tok/s | Draft Acceptance | Seq-steps/s | Est. C64 Step (ms) |\r\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |\r\n| false | false | TP4/DP1 | 33544.13 | 2261.37 | 53.72% | 865.89 | 73.91 |\r\n| true | false | TP4/DP1 | 33322.61 | 2245.84 | 51.56% | 881.83 | 72.58 |\r\n| false | false | DP2/TP4/EP8/FI2S | 26872.32 | 2762.68 | 39.80% | 1259.20 | 50.83 |\r\n| false | true | DP2/TP4/EP8/FI2S | 26763.57 | 2775.67 | 43.28% | 1207.65 | 53.00 |\r\n| true | false | DP2/TP4/EP8/FI2S | 25751.63 | 3101.35 | 46.48% | 1295.25 | 49.41 |\r\n\r\n\r\nNotes:\r\n\r\n- `Prefill tok/s` is total token throughput. `Raw Decode tok/s` is output-token throughput and is affected by MTP acceptance.\r\n- For MTP=3: `Seq-steps/s = Raw Decode tok/s / (1 + 3 × Draft Acceptance)`.\r\n- `Est. C64 Step = 64 / Seq-steps/s × 1000`.\r\n- `FI2S` means FlashInfer NVLink Two-Sided, the EP MoE All-to-All backend.\r\n- After acceptance normalization, the offload decode differences are +1.84% for TP4 and +2.86% for DP2; these single-run differences should be treated as approximately flat.\r\n\r\n> AI assistance was used for code analysis, implementation, refactoring, and test drafting. I reviewed the resulting changes and test results.\r\n\r\n---\r\n<details>\r\n<summary>Essential Elements of an Effective PR Description Checklist</summary>\r\n\r\n- [x] The purpose of the PR.\r\n- [x] The difference from related open PRs.\r\n- [x] The test plan.\r\n- [x] The unit-test and model-evaluation results.\r\n- [ ] Optional user-facing documentation for the new environment variable and CLI option.\r\n\r\n</details>\r\n\r\n",
+    "comments": 13,
+    "is_pr": true,
+    "url": "https://github.com/vllm-project/vllm/pull/54371"
+  },
+  "53896": {
+    "title": "[Model] Support Qwen3.8-Flash-Next",
+    "state": "closed",
+    "created": "2026-08-26T12:56:50Z",
+    "body": "\r\n\r\n## Purpose\r\nsupport https://huggingface.co/Qwen/Qwen3.8-Flash-Next\r\n\r\n## How to run\r\n\r\n```\r\nvllm serve Qwen/Qwen3.8-Flash-Next\r\n          --served-model-name qwen3.8-flash-next\r\n          -tp 4\r\n          --enable-prefix-caching\r\n          --speculative-config '{\"method\": \"mtp\", \"num_speculative_tokens\": 3}'\r\n```\r\nEnable PLE offload(note PLE offload support is in https://github.com/vllm-project/vllm/pull/53899)\r\n```\r\nVLLM_PLE_CPU_OFFLOAD=1\r\n```\r\n\r\n## Validation\r\n\r\n- Without offload:\r\n  - Weight formats: BF16, FP8, and NVFP4\r\n  - Platforms: GB300, GB200, H200, and MI355X (BF16 only)\r\n  - Parallel configurations: TP2, TP4, TEP4\r\n \r\n- With N-gram embedding offload:\r\n  - Weight formats: BF16 and FP8 (NVFP4 is not currently supported)\r\n  - Platform: GB200\r\n  - Parallel configurations: TP2, TP4, and DEP4\r\n\r\nThe validation results were provided by Inferact. See the [vLLM recipe](https://recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next) for details. \r\n\r\n**Note:**  This PR is being updated with the latest changes from `main` and may be unstable during review. Please use PR #53899 for builds in the meantime.\r\n\r\n---\r\n<details>\r\n<summary> Essential Elements of an Effective PR Description Checklist </summary>\r\n\r\n- [ ] The purpose of the PR, such as \"Fix some issue (link existing issues this PR will resolve)\".\r\n- [ ] The test plan, such as providing test command.\r\n- [ ] The test results, such as pasting the results comparison before and after, or e2e results\r\n- [ ] (Optional) The necessary documentation update, such as updating `supported_models.md` and `examples` for a new model.\r\n</details>\r\n\r\n**BEFORE SUBMITTING, PLEASE READ <https://docs.vllm.ai/en/latest/contributing>** (anything written below this line will be removed by GitHub Actions)\r\n",
+    "comments": 79,
+    "is_pr": true,
+    "url": "https://github.com/vllm-project/vllm/pull/53896"
+  },
+  "54722": {
+    "title": "[Qwen4] validate FP8 PLE weight scale after loading",
+    "state": "closed",
+    "created": "2026-09-01T07:24:13Z",
+    "body": "\r\n\r\n\r\n## Purpose\r\n\r\nFix a fail-open risk in the Qwen3.8 Flash Next FP8 PLE weight loading path.\r\n\r\nIf `ngram_embedding.weight_scale` is missing or incorrectly mapped, the registered parameter could remain uninitialized without being detected. This PR:\r\n\r\n- Stores the BF16 PLE global scale as FP32 so the existing sentinel initialization applies.\r\n- Validates the sentinel in `process_weights_after_loading()` after all checkpoint shards have been processed.\r\n\r\nThanks to @Dev-Jahn for identifying and reporting this issue.\r\n\r\n## Not a duplicate\r\n\r\nSearched the open PRs for [Qwen3.8 PLE weight_scale](https://github.com/vllm-project/vllm/pulls?q=is%3Apr+is%3Aopen+Qwen3.8+PLE+weight_scale) and [FP8 PLE scale](https://github.com/vllm-project/vllm/pulls?q=is%3Apr+is%3Aopen+FP8+PLE+scale). I did not find an open PR addressing this missing post-load validation.\r\n\r\n## Test Plan\r\n\r\n```bash\r\npython -m pytest -q tests/models/qwen4_exp/test_ple.py\r\n\r\npre-commit run --files \\\r\n  vllm/models/qwen4_exp/nvidia/ple_layer.py \\\r\n  tests/models/qwen4_exp/test_ple.py\r\n\r\ngit diff --check\r\n```\r\n\r\n## Test Result\r\n* Unit tests: 11 passed.\r\n* Pre-commit hooks: all passed.\r\n* git diff --check: passed.\r\n* Missing scale now raises ValueError during post-load processing.\r\n\r\n> AI assistance was used for code analysis, implementation, and test drafting. I reviewed the resulting changes and test results.\r\n\r\n---\r\n<details>\r\n<summary> Essential Elements of an Effective PR Description Checklist </summary>\r\n\r\n- [x] The purpose of the PR, such as \"Fix some issue (link existing issues this PR will resolve)\".\r\n- [x] The test plan, such as providing test command.\r\n- [ x The test results, such as pasting the results comparison before and after, or e2e results\r\n- [ ] (Optional) The necessary documentation update, such as updating `supported_models.md` and `examples` for a new model.\r\n</details>\r\n\r\n",
+    "comments": 3,
+    "is_pr": true,
+    "url": "https://github.com/vllm-project/vllm/pull/54722"
+  },
+  "commit_g76cfe1cd8": {
+    "error": "HTTP Error 422: Unprocessable Entity"
+  },
+  "searches2": {
+    "repo:vllm-project/vllm \"no available shared memory broadcast block\"": {
+      "total": 181,
+      "items": [
+        {
+          "number": 57635,
+          "title": "[Bugfix] Persist FlashInfer autotune cache per rank to fix the rank-0-only cache-hit deadlock",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57635",
+          "is_pr": true,
+          "updated": "2026-09-19T20:08:34Z"
+        },
+        {
+          "number": 55763,
+          "title": "[Bugfix][KV Connector] Retry Mooncake bootstrap registration on timeout",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/55763",
+          "is_pr": true,
+          "updated": "2026-09-19T19:35:34Z"
+        },
+        {
+          "number": 41834,
+          "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/41834",
+          "is_pr": true,
+          "updated": "2026-09-19T05:54:51Z"
+        },
+        {
+          "number": 57423,
+          "title": "[Bug]: FlashInfer autotune config cache hits only on rank 0, deadlocking the engine launch",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/57423",
+          "is_pr": false,
+          "updated": "2026-09-19T03:45:24Z"
+        },
+        {
+          "number": 44185,
+          "title": "[Bug]: vLLM hangs during speculative decoding with MoE draft model near max_model_len under Data Parallelism (DP)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/44185",
+          "is_pr": false,
+          "updated": "2026-09-19T01:41:48Z"
+        },
+        {
+          "number": 45800,
+          "title": "[Bug]: MiniMax-M3-MXFP8 hangs on FlashInfer MNNVL all-reduce (torch symmetric_memory rendezvous) during CUDA graph capture on 2-node TP=8 non-MNNVL setup; fuse_allreduce_rms=False does not help",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/45800",
+          "is_pr": false,
+          "updated": "2026-09-19T01:40:22Z"
+        },
+        {
+          "number": 57429,
+          "title": "[Bug][ROCm] Engine stops making progress inside an aiter fused MoE step on gfx942, then dies with no error (GLM-5.3, TP8, v0.29.0)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/57429",
+          "is_pr": false,
+          "updated": "2026-09-17T21:21:07Z"
+        },
+        {
+          "number": 54237,
+          "title": "[Bug]: 0.28.0 and 0.29.0 consume all host memory at start and freeze (OK with 0.27.1)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/54237",
+          "is_pr": false,
+          "updated": "2026-09-17T02:16:48Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm \"Qwen3.8-Flash-Next\"": {
+      "total": 167,
+      "items": [
+        {
+          "number": 53899,
+          "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53899",
+          "is_pr": true,
+          "updated": "2026-09-19T09:21:16Z"
+        },
+        {
+          "number": 56322,
+          "title": "[Qwen4Exp] support Sequence Parallelism for Qwen3.8-Flash-Next",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/56322",
+          "is_pr": true,
+          "updated": "2026-09-19T06:11:16Z"
+        },
+        {
+          "number": 54431,
+          "title": "[Model][Qwen4] Use ragged PLE IDs for CPU offload",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54431",
+          "is_pr": true,
+          "updated": "2026-09-19T05:07:34Z"
+        },
+        {
+          "number": 54275,
+          "title": "[Bugfix] Clamp the kv-cache-memory fully-utilize suggestion by memory other processes allocated since startup",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54275",
+          "is_pr": true,
+          "updated": "2026-09-19T03:45:51Z"
+        },
+        {
+          "number": 57497,
+          "title": "[Qwen4Exp][ROCm] PLE n-gram table CPU offload + async prefetch",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57497",
+          "is_pr": true,
+          "updated": "2026-09-19T03:05:00Z"
+        },
+        {
+          "number": 40704,
+          "title": "[ModelRunner V2] Speculative Decoding NGram GPU Implementations",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/40704",
+          "is_pr": true,
+          "updated": "2026-09-19T00:32:19Z"
+        },
+        {
+          "number": 52525,
+          "title": "[Bug]: Marlin MoE output depends on equivalent within-expert token ordering",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/52525",
+          "is_pr": false,
+          "updated": "2026-09-19T00:16:46Z"
+        },
+        {
+          "number": 55390,
+          "title": "[Bugfix] Annotate MTP draft KV cache groups positionally on the hybrid grouping path",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/55390",
+          "is_pr": true,
+          "updated": "2026-09-18T22:39:23Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm ple offload stall OR hang OR deadlock": {
+      "total": 48,
+      "items": [
+        {
+          "number": 53899,
+          "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53899",
+          "is_pr": true,
+          "updated": "2026-09-19T09:21:16Z"
+        },
+        {
+          "number": 56322,
+          "title": "[Qwen4Exp] support Sequence Parallelism for Qwen3.8-Flash-Next",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/56322",
+          "is_pr": true,
+          "updated": "2026-09-19T06:11:16Z"
+        },
+        {
+          "number": 54431,
+          "title": "[Model][Qwen4] Use ragged PLE IDs for CPU offload",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54431",
+          "is_pr": true,
+          "updated": "2026-09-19T05:07:34Z"
+        },
+        {
+          "number": 57656,
+          "title": "[Bugfix] Clamp the kv-cache-memory advisory by memory allocated since startup",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57656",
+          "is_pr": true,
+          "updated": "2026-09-19T03:46:08Z"
+        },
+        {
+          "number": 54275,
+          "title": "[Bugfix] Clamp the kv-cache-memory fully-utilize suggestion by memory other processes allocated since startup",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54275",
+          "is_pr": true,
+          "updated": "2026-09-19T03:45:51Z"
+        },
+        {
+          "number": 57497,
+          "title": "[Qwen4Exp][ROCm] PLE n-gram table CPU offload + async prefetch",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57497",
+          "is_pr": true,
+          "updated": "2026-09-19T03:05:00Z"
+        },
+        {
+          "number": 55390,
+          "title": "[Bugfix] Annotate MTP draft KV cache groups positionally on the hybrid grouping path",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/55390",
+          "is_pr": true,
+          "updated": "2026-09-18T22:39:23Z"
+        },
+        {
+          "number": 54709,
+          "title": "[Bug]: Qwen4Exp (Qwen3.8-Flash-Next) hard-refuses PP>1 for any PLE checkpoint, and its MTP draft head branches on the global `is_first_rank`",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/54709",
+          "is_pr": false,
+          "updated": "2026-09-18T15:49:36Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm \"VLLM_ENABLE_V1_MULTIPROCESSING\"": {
+      "total": 265,
+      "items": [
+        {
+          "number": 53298,
+          "title": "[Bugfix][KV Connector] Restore state after KV load rejection",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53298",
+          "is_pr": true,
+          "updated": "2026-09-19T18:27:13Z"
+        },
+        {
+          "number": 53743,
+          "title": "[Bugfix] Fix external LB DP rank handling when replicas share nodes",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53743",
+          "is_pr": true,
+          "updated": "2026-09-18T15:17:52Z"
+        },
+        {
+          "number": 54243,
+          "title": "[Bug]: batch-invariant M buckets collapse under `torch.compile` (0.28.0)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/54243",
+          "is_pr": false,
+          "updated": "2026-09-18T01:44:12Z"
+        },
+        {
+          "number": 56754,
+          "title": "[Feature][Core] Support draining in-process requests before sleep",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/56754",
+          "is_pr": true,
+          "updated": "2026-09-17T05:51:59Z"
+        },
+        {
+          "number": 55533,
+          "title": "[Bug][Spec Decode] Hybrid GDN (Qwen3.5/Qwen3.8 27B-class) + MTP: scheduler runs only ~3 concurrent sequences at batch >= 4 — acceptance/throughput collapse",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/55533",
+          "is_pr": false,
+          "updated": "2026-09-17T05:17:13Z"
+        },
+        {
+          "number": 47487,
+          "title": "[CI/Build] Remove stale xfail marks from min_tokens e2e tests",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/47487",
+          "is_pr": true,
+          "updated": "2026-09-17T05:08:54Z"
+        },
+        {
+          "number": 56900,
+          "title": "[Bug]: Qwen/Qwen1.5-MoE-A2.7B-Chat produces degenerate output with torch.compile (VLLM_COMPILE) but correct output without it on vLLM 0.28.0 (H100, torch 2.13.0+cu130); CUDA graphs, compile cache and custom_ops make no difference",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/56900",
+          "is_pr": false,
+          "updated": "2026-09-17T00:05:44Z"
+        },
+        {
+          "number": 54993,
+          "title": "[Feature][Mamba] Support batch-invariant Mamba2 prefill and recovery",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/54993",
+          "is_pr": true,
+          "updated": "2026-09-16T20:48:58Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm get_output_async": {
+      "total": 268,
+      "items": [
+        {
+          "number": 41834,
+          "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/41834",
+          "is_pr": true,
+          "updated": "2026-09-19T05:54:51Z"
+        },
+        {
+          "number": 43222,
+          "title": "[Bug]: Possible to get GPU OOM for DP/EP",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/43222",
+          "is_pr": false,
+          "updated": "2026-09-19T01:42:43Z"
+        },
+        {
+          "number": 30142,
+          "title": "[Bug]: `assert request.num_output_placeholders >= 0` can fail in async scheduling",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/30142",
+          "is_pr": false,
+          "updated": "2026-09-18T01:44:34Z"
+        },
+        {
+          "number": 54237,
+          "title": "[Bug]: 0.28.0 and 0.29.0 consume all host memory at start and freeze (OK with 0.27.1)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/54237",
+          "is_pr": false,
+          "updated": "2026-09-17T02:16:48Z"
+        },
+        {
+          "number": 40987,
+          "title": "[Bug][DeepSeek-V4][MTP] deep_gemm assertion: context_lens.is_contiguous() in paged MQA metadata",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/40987",
+          "is_pr": false,
+          "updated": "2026-09-17T01:48:01Z"
+        },
+        {
+          "number": 41647,
+          "title": "[Bug]: Unable to start Gemma4 with 2 GPUs",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/41647",
+          "is_pr": false,
+          "updated": "2026-09-17T01:47:38Z"
+        },
+        {
+          "number": 42761,
+          "title": "[Bug]: kv_cache_offloadig crashes on 0.21.0 - KeyError in self._block_id_to_pending_jobs[bid]",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/42761",
+          "is_pr": false,
+          "updated": "2026-09-17T01:46:13Z"
+        },
+        {
+          "number": 42831,
+          "title": "[Bug]: MultiConnector _update_from_kv_xfer_finished error",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/42831",
+          "is_pr": false,
+          "updated": "2026-09-17T01:45:57Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm \"output processing time\" OR \"output processing\" backlog": {
+      "total": 93,
+      "items": [
+        {
+          "number": 41834,
+          "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/41834",
+          "is_pr": true,
+          "updated": "2026-09-19T05:54:51Z"
+        },
+        {
+          "number": 57535,
+          "title": "[BugFix][XPU] Skip Qwen4Exp registry import test on XPU",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57535",
+          "is_pr": true,
+          "updated": "2026-09-18T09:53:11Z"
+        },
+        {
+          "number": 57479,
+          "title": "[RFC]: Bound frontend drain latency for bulk aborts and long non-streaming completions",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/57479",
+          "is_pr": false,
+          "updated": "2026-09-18T02:54:51Z"
+        },
+        {
+          "number": 52061,
+          "title": "[Feature] Add native forward-pass metrics emission",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/52061",
+          "is_pr": true,
+          "updated": "2026-09-17T23:49:04Z"
+        },
+        {
+          "number": 57251,
+          "title": "[Metrics][KV Offload] Add Prometheus metrics for SimpleCPUOffloadConnector",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57251",
+          "is_pr": true,
+          "updated": "2026-09-17T22:38:24Z"
+        },
+        {
+          "number": 56455,
+          "title": "[Perf]Support Support bounded prefill admission for scheduler.",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/56455",
+          "is_pr": true,
+          "updated": "2026-09-17T05:44:36Z"
+        },
+        {
+          "number": 33702,
+          "title": "[Roadmap]: PD Disaggregation with `NixlConnector` Roadmap",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/33702",
+          "is_pr": false,
+          "updated": "2026-09-16T22:58:30Z"
+        },
+        {
+          "number": 51287,
+          "title": "[Bugfix] Disable async scheduling when VLLM_BATCH_INVARIANT=1",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/51287",
+          "is_pr": true,
+          "updated": "2026-09-15T00:24:24Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm XPU concurrent decode hang OR stall OR freeze": {
+      "total": 237,
+      "items": [
+        {
+          "number": 41834,
+          "title": "[New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/41834",
+          "is_pr": true,
+          "updated": "2026-09-19T05:54:51Z"
+        },
+        {
+          "number": 53055,
+          "title": "[Bugfix][Kernels] Guard DeepGEMM in mhc_pre_broadcast_tilelang with a torch fallback",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53055",
+          "is_pr": true,
+          "updated": "2026-09-19T02:43:14Z"
+        },
+        {
+          "number": 55422,
+          "title": "[Docker] Compile Python bytecode at image build time",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/55422",
+          "is_pr": true,
+          "updated": "2026-09-19T01:50:27Z"
+        },
+        {
+          "number": 42895,
+          "title": "[Bug]: NIXL disagg fails for Qwen3.5 hybrid model when prefill TP4 and decode DP8 use different physical block sizes",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/42895",
+          "is_pr": false,
+          "updated": "2026-09-19T01:43:20Z"
+        },
+        {
+          "number": 57418,
+          "title": "[Core][KV Connector] Share in-flight external-prefix KV loads",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57418",
+          "is_pr": true,
+          "updated": "2026-09-18T22:54:41Z"
+        },
+        {
+          "number": 57452,
+          "title": "[ROCm][Kimi-K3][Perf] Fuse MLA decode KV-cache write and Q-prep via AITER",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/57452",
+          "is_pr": true,
+          "updated": "2026-09-18T22:22:08Z"
+        },
+        {
+          "number": 56583,
+          "title": "[Bug]: Garbled output for GLM 5.3 Flash when weights loaded with run:ai distributed streamer",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/56583",
+          "is_pr": false,
+          "updated": "2026-09-18T21:38:25Z"
+        },
+        {
+          "number": 45819,
+          "title": "[Feature] Add batch invariance support to GDN_ATTN backend",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/45819",
+          "is_pr": true,
+          "updated": "2026-09-18T16:11:25Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm async scheduling regression 0.26 concurrency throughput": {
+      "total": 7,
+      "items": [
+        {
+          "number": 57250,
+          "title": "[Core] structured generation mode for DiffusionGemma model (Jev-like)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/57250",
+          "is_pr": true,
+          "updated": "2026-09-19T21:20:24Z"
+        },
+        {
+          "number": 54951,
+          "title": "[Perf][GLM-5.3-Flash] Shard long-context indexer prefill rows across TP",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/54951",
+          "is_pr": true,
+          "updated": "2026-09-17T08:28:35Z"
+        },
+        {
+          "number": 37431,
+          "title": "Mamba-2 Triton kernels crash with illegal instruction on SM121 (DGX Spark) without CUDA_LAUNCH_BLOCKING=1",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/37431",
+          "is_pr": false,
+          "updated": "2026-09-07T10:19:26Z"
+        },
+        {
+          "number": 43559,
+          "title": "[Bug]: Accuracy drops ~20% when `--enable-prefix-caching` is used together with MTP speculative decoding (Qwen3.6 35B-A3B)",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/43559",
+          "is_pr": false,
+          "updated": "2026-08-06T17:21:01Z"
+        },
+        {
+          "number": 44404,
+          "title": "[Profiler] Get Detailed MultiModal Data Preprocessing Timing Stats",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/44404",
+          "is_pr": true,
+          "updated": "2026-07-29T03:25:16Z"
+        },
+        {
+          "number": 14452,
+          "title": "[Doc]: Steps to run vLLM on your RTX5080 or 5090!",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/issues/14452",
+          "is_pr": false,
+          "updated": "2026-06-05T13:53:12Z"
+        },
+        {
+          "number": 24799,
+          "title": "[Core] Async Scheduling X Spec Decoding Compatibility",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/24799",
+          "is_pr": true,
+          "updated": "2026-01-09T05:33:45Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm \"throughput degradation\" over time rounds": {
+      "total": 0,
+      "items": []
+    },
+    "repo:vllm-project/vllm \"num_output_placeholders\"": {
+      "total": 55,
+      "items": [
+        {
+          "number": 53298,
+          "title": "[Bugfix][KV Connector] Restore state after KV load rejection",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53298",
+          "is_pr": true,
+          "updated": "2026-09-19T18:27:13Z"
+        },
+        {
+          "number": 57680,
+          "title": "[Bug]: Decode throughput drops ~3.3x from 0.26.0 to 0.29.0 on H100 (Qwen3.6-35B-A3B-FP8, same config, same backends)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/57680",
+          "is_pr": false,
+          "updated": "2026-09-19T11:14:08Z"
+        },
+        {
+          "number": 57562,
+          "title": "[Bug]: AsyncScheduler num_output_placeholders underflow with chunked prefill + concurrency (no spec decode, no preemption) — regression from 0.24.0",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/57562",
+          "is_pr": false,
+          "updated": "2026-09-18T13:00:04Z"
+        },
+        {
+          "number": 30142,
+          "title": "[Bug]: `assert request.num_output_placeholders >= 0` can fail in async scheduling",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/30142",
+          "is_pr": false,
+          "updated": "2026-09-18T01:44:34Z"
+        },
+        {
+          "number": 45146,
+          "title": "[BugFix] Reset num_output_placeholders on KV load failure recomputation",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/45146",
+          "is_pr": true,
+          "updated": "2026-09-18T00:02:51Z"
+        },
+        {
+          "number": 50671,
+          "title": "[Bugfix][Security] Fix silent input corruption and remote DoS under GPU CC",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/50671",
+          "is_pr": true,
+          "updated": "2026-09-17T15:38:03Z"
+        },
+        {
+          "number": 48197,
+          "title": "[RFC]: StructuredOutputManager x Speculative Decoding Refactor",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/48197",
+          "is_pr": false,
+          "updated": "2026-09-14T18:25:28Z"
+        },
+        {
+          "number": 50692,
+          "title": "[Bugfix][AsyncScheduler] Reserve placeholders for the final prefill chunk of a streaming update",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/50692",
+          "is_pr": true,
+          "updated": "2026-09-13T08:54:18Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm \"duplicate PLE\"": {
+      "total": 8,
+      "items": [
+        {
+          "number": 54431,
+          "title": "[Model][Qwen4] Use ragged PLE IDs for CPU offload",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54431",
+          "is_pr": true,
+          "updated": "2026-09-19T05:07:34Z"
+        },
+        {
+          "number": 53912,
+          "title": "[Bug]: prefix caching + MTP still corrupts output on hybrid Mamba/GDN models in v0.28.0 (#43559 closed but unfixed)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/53912",
+          "is_pr": false,
+          "updated": "2026-09-15T13:10:56Z"
+        },
+        {
+          "number": 54371,
+          "title": "[Qwen4Exp] Support UVA PLE-offload and Engram tensor parallelism",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54371",
+          "is_pr": true,
+          "updated": "2026-09-09T14:32:35Z"
+        },
+        {
+          "number": 55375,
+          "title": "[Bugfix][Qwen4Exp] fix state index strides in fused PLE conv",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/55375",
+          "is_pr": true,
+          "updated": "2026-09-05T14:02:21Z"
+        },
+        {
+          "number": 54129,
+          "title": "[Model] Support disk-backed (mmap) PLE table for Qwen3.8-Flash-Next (VLLM_PLE_MMAP)",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/54129",
+          "is_pr": true,
+          "updated": "2026-09-03T16:47:16Z"
+        },
+        {
+          "number": 54722,
+          "title": "[Qwen4] validate FP8 PLE weight scale after loading",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54722",
+          "is_pr": true,
+          "updated": "2026-09-02T04:30:59Z"
+        },
+        {
+          "number": 53909,
+          "title": "[Kernel][Qwen]Add qwen4 fuse op",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53909",
+          "is_pr": true,
+          "updated": "2026-09-01T05:50:55Z"
+        },
+        {
+          "number": 54525,
+          "title": "[Qwen-Flash-Next] Fix Qwen4Exp PLE prefill memory amplification",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/54525",
+          "is_pr": true,
+          "updated": "2026-08-31T09:56:52Z"
+        }
+      ]
+    },
+    "repo:vllm-project/vllm \"PleOffload\"": {
+      "total": 4,
+      "items": [
+        {
+          "number": 53899,
+          "title": "Support PLE-Offload for Qwen3.8-Flash-Next ",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/pull/53899",
+          "is_pr": true,
+          "updated": "2026-09-19T09:21:16Z"
+        },
+        {
+          "number": 53896,
+          "title": "[Model] Support Qwen3.8-Flash-Next",
+          "state": "closed",
+          "url": "https://github.com/vllm-project/vllm/pull/53896",
+          "is_pr": true,
+          "updated": "2026-09-17T14:55:27Z"
+        },
+        {
+          "number": 53960,
+          "title": "[Bug]: VLLM_PLE_CPU_OFFLOAD deadlocks at kernel warmup on single GPU (TP=1) - Qwen3.8-Flash-Next on GB10/sm_121",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/53960",
+          "is_pr": false,
+          "updated": "2026-09-03T17:30:09Z"
+        },
+        {
+          "number": 54559,
+          "title": "[Bug]: qwen3.8-flash-next-fp8: No available shared memory broadcast block found in 60 seconds.",
+          "state": "open",
+          "url": "https://github.com/vllm-project/vllm/issues/54559",
+          "is_pr": false,
+          "updated": "2026-09-01T04:01:55Z"
+        }
+      ]
+    }
+  }
+}
