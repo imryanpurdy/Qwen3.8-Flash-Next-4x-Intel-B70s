@@ -4,7 +4,7 @@
 set -uo pipefail   # no set -e: probes/restarts handled explicitly below
 PORT=${PORT:-8021}; MODEL=${MODEL:-qwen3.8-flash-next}       # SERVED_MODEL_NAME
 MNS=${MNS:-16}; CONTAINER=${CONTAINER:-qwen38-flash-next}; BURSTS=${BURSTS:-15}
-CONC=${CONC:-8}; READY_TIMEOUT=${READY_TIMEOUT:-1800}; ENGINE_LOG=${ENGINE_LOG:-.run/server.log}  # L1 poll cap (s); TODO-RYAN: confirm engine-log path
+CONC=${CONC:-8}; READY_TIMEOUT=${READY_TIMEOUT:-1800}; ENGINE_LOG=${ENGINE_LOG:-.run/server.log}  # L1 poll cap (s); engine-log path VERIFIED live 2026-09-20 (fn-recipe-int4/.run/server.log)
 STALLSPY_CYCLES=${STALLSPY_CYCLES:-75}; STALLSPY_CADENCE=${STALLSPY_CADENCE:-5}; STALLSPY_MAX=${STALLSPY_MAX:-300}; STALLSPY_TIMEOUT=${STALLSPY_TIMEOUT:-900}; STALL_MIN=200  # L3 loop/dumper cap (s); gate floor (runbook targets >=300)
 VLLM_SP=/opt/venv/lib/python3.12/site-packages/vllm
 API=http://localhost:${PORT}; DUMP_DIR=/tmp/rebuild-verify-dumps; TEE_LOG=${TEE_LOG:-/tmp/rebuild-verify.log}
@@ -56,7 +56,7 @@ l1(){ # BOOT: READY + boot provenance + in-container canaries + capture-size cov
   done
   say "L1: /v1/models READY ($MODEL)"
   local st; st=$(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null || echo UNKNOWN)
-  say "L1 provenance: StartedAt=$st (boot epoch) | boot_clock=$(grep -m1 -oE '\"boot_id\"[^,}]*' .run/boot_clock.jsonl 2>/dev/null || echo '<unparsed — TODO-RYAN: exact boot_clock.jsonl key>') | uptime=$(cut -d' ' -f1 /proc/uptime)s"
+  say "L1 provenance: StartedAt=$st (boot epoch) | boot_clock=$(grep -m1 -oE '\"boot_id\"[^,}]*' .run/boot_clock.jsonl 2>/dev/null || echo 'no boot_clock.jsonl in this engine setup (verified 2026-09-20 — wd-decisions.jsonl is the only jsonl)') | uptime=$(cut -d' ' -f1 /proc/uptime)s"
   gen_probe || { say "FAIL[L1]: /v1/models 200 but 1-token gen failed (EngineCore dead — runbook blindspot)"; return 1; }
   if [[ $DOCKER_OK -ne 1 ]]; then say "L1 canaries+capture: SKIP (no docker)"; return 0; fi
   local c1 c2 c3 c4
@@ -67,12 +67,12 @@ l1(){ # BOOT: READY + boot provenance + in-container canaries + capture-size cov
   cap=$(elog | grep -oE 'cudagraph_capture_sizes[^]]*\]' | tail -1)
   [[ -n "$cap" ]] || { say "FAIL[L1]: 'cudagraph_capture_sizes' not in engine log"; return 1; }
   cap_n=$(printf '%s' "$cap" | grep -oE '[0-9]+' | wc -l | tr -d ' '); cap_last=$(printf '%s' "$cap" | grep -oE '[0-9]+' | tail -1)
-  cap_cnt=$(elog | grep -cE 'Capturing CUDA graphs \(FULL\)' || true)
-  say "  capsizes: '$cap' n=$cap_n last=$cap_last MNS=$MNS FULL-lines=$cap_cnt"
-  # TODO-RYAN: engine may emit ONE summary line 'FULL: N/N' instead of N per-size lines; if so, gate on
-  # the '/N' denominator == list length instead of line count. Task-specified rule used here:
-  [[ "$cap_n" -ge 1 && "$cap_last" == "$MNS" && "$cap_cnt" == "$cap_n" ]] || { say "FAIL[L1]: capture list does not cover MNS or FULL count != list length"; return 1; }
-  say "L1 PASS: READY, canaries 7/1/1/1, captures 1..${MNS}"
+  # Engine emits ONE tqdm completion line with N/N denominator (live-verified 2026-09-20: 'Capturing CUDA graphs (FULL): 100%|...| 10/10'),
+  # not per-size lines — gate on the final line's denominator == list length (\r progress fragments make raw line-count wrong).
+  cap_cnt=$(elog | grep 'Capturing CUDA graphs (FULL)' | tail -1 | grep -oE '[0-9]+/[0-9]+' | tail -1 | cut -d/ -f2)
+  say "  capsizes: '$cap' n=$cap_n last=$cap_last MNS=$MNS FULL-denominator=$cap_cnt"
+  [[ "$cap_n" -ge 1 && "$cap_last" == "$MNS" && "$cap_cnt" == "$cap_n" ]] || { say "FAIL[L1]: capture list does not cover MNS or FULL denominator ($cap_cnt) != list length ($cap_n)"; return 1; }
+  say "L1 PASS: READY, canaries 7/1/1/1, captures $cap_cnt/$cap_n (per CAP_SIZES_LIST)"
 }
 l2(){ # KNOWN-ANSWER: Paris + alphabet + engine alive post-probe
   say "=== L2 KNOWN-ANSWER ==="
@@ -187,7 +187,7 @@ say "  L3 L0-ABSENCE (py-spy):                    $L3S"
 say "  L4 CAMPAIGN:                               $L4S"
 say "  L5 MTP LADDER:                             $L5S (report-only)"
 say "  boot_id (docker StartedAt): $(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null || echo UNKNOWN)"
-say "  boot_clock.jsonl: $(grep -m1 -oE '\"boot_id\"[^,}]*' .run/boot_clock.jsonl 2>/dev/null || echo '<unparsed — runbook sec 6>')"
+say "  boot_clock.jsonl: $(grep -m1 -oE '\"boot_id\"[^,}]*' .run/boot_clock.jsonl 2>/dev/null || echo 'n/a (no boot_clock.jsonl in this engine setup — docker StartedAt is the boot provenance)')"
 say "  kernel:           $(uname -r)"
 local_vx=$(CE 'pip show vllm-xpu-kernels 2>/dev/null | grep -iE "^Version"' | head -1); [[ -n "$local_vx" ]] || local_vx=UNKNOWN
 say "  vllm-xpu-kernels: $local_vx"
