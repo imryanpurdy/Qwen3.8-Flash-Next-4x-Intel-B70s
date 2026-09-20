@@ -1,0 +1,164 @@
+[1] total=19 :: repo:vllm-project/vllm "stuck running" concurrent
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #42271     [Bug]: MTP + FULL_AND_PIECEWISE cudagraph deadlocks at HT batched-decode when bonus-token-only forward shape is scheduled
+    #40926     [Bug]: V1 engine + MTP + GLM-5.1 (DSA + MoE + MLA) — workers hang under sustained traffic, sample_tokens RPC timeout, EngineDeadError
+    #49317     [Bug]: [Performance] AsyncLLM `add_request` runs multimodal `process_inputs` (HF processor) synchronously on the event-loop thread, serializing per-request image preprocessing and starving the GPU under concurrent multi-image requests
+    #42371     [Bug]: SimpleCPUOffloadConnector: requests stuck in Waiting (Running=0) under sustained load / CPU offload
+    #44785 PR  [Model] Add LLaVA-OneVision-2 (LlavaOnevision2ForConditionalGeneration)
+    #18431     [Bug]: Engine stuck with requests are blocked, running/waiting request count and KV cache usage remain constant.
+    #45388     [Bug]: Scheduler permanently deadlocks under KV-cache pressure when a KV-offloading connector is enabled
+[2] total=190 :: repo:vllm-project/vllm "EngineCore" "idle"
+    #51052 PR  [KVConnector][MoRIIO] Transfer hybrid mamba/KDA recurrent state in READ mode
+    #53899 PR  Support PLE-Offload for Qwen3.8-Flash-Next 
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #56868     [Bug]: GLM-5.3-Flash long-decode degeneration after accumulated reasoning decode
+    #51360 PR  [Frontend] Add reusable TP1 initialized-engine snapshots
+    #57449     [Bug]: MLA Workspace OOM At Runtime
+    #54359     [Bug][ROCm] GLM-5.3-Flash kpool indexer overwrites its own KV cache: backend advertises a kernel block size the kernels do not use
+    #51506 PR  [Bugfix][Kernel] Hoist tensor-descriptor build out of unified-attention TD ti…
+[3] total=5 :: repo:vllm-project/vllm "output processing" stall v1
+    #45635 PR  [AuxOutput] Add block-keyed storage for routed-expert outputs
+    #55700 PR  [Feat][Frontend] Add Watchdog for Engine and Worker Monitoring
+    #49628 PR  [V1][Observability] Add opt-in diagnostics for stalled engine stages
+    #54322 PR  [Bugfix] Keep the frontend profiler on one thread, export off it
+    #36542 PR  Compute MM Pre-processing Timing Metrics in a Non-Blocking Way for Prod
+[4] total=0 :: repo:vllm-project/vllm "VLLM_OUTPUT_PROCESS"
+[5] total=313 :: repo:vllm-project/vllm output_handler deadlock OR hang OR slow
+    #54317     [Bug]: GLM-5.3-Flash (glm5next) — recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #43222     [Bug]: Possible to get GPU OOM for DP/EP
+    #50011     [Bug]: Sleep mode wake_up crashes EngineCore natively on DGX Spark (GB10, unified memory) — sleep level 1 works, wake kills the engine
+    #52234     [Bug]: NIXL HMA receive failures can return HTTP 200 with corrupted tokens
+    #30142     [Bug]: `assert request.num_output_placeholders >= 0` can fail in async scheduling
+    #54237     [Bug]: 0.28.0 and 0.29.0 consume all host memory at start and freeze (OK with 0.27.1)
+    #40987     [Bug][DeepSeek-V4][MTP] deep_gemm assertion: context_lens.is_contiguous() in paged MQA metadata
+[6] total=216 :: repo:vllm-project/vllm "shared memory broadcast"
+    #57635 PR  [Bugfix] Persist FlashInfer autotune cache per rank to fix the rank-0-only cache-hit deadlock
+    #55763 PR  [Bugfix][KV Connector] Retry Mooncake bootstrap registration on timeout
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #57423     [Bug]: FlashInfer autotune config cache hits only on rank 0, deadlocking the engine launch
+    #44185     [Bug]: vLLM hangs during speculative decoding with MoE draft model near max_model_len under Data Parallelism (DP)
+    #45800     [Bug]: MiniMax-M3-MXFP8 hangs on FlashInfer MNNVL all-reduce (torch symmetric_memory rendezvous) during CUDA graph capture on 2-node TP=8 non-MNNVL setup; fuse_allreduce_rms=False does not help
+    #42742     [Bug]: Silent worker termination after long idle on dual-node `--no-ray` setup (likely `TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC` SIGABRT)
+    #52917 PR  [Core][Hardware][Arm] (All GPUs) Adaptive spin grace + bounded arch waits (aarch64 WFET, x86 WAITPKG) for shm_broadcast
+[7] total=84 :: repo:vllm-project/vllm "shm_broadcast"
+    #53899 PR  Support PLE-Offload for Qwen3.8-Flash-Next 
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #55844 PR  [Core][Frontend] Bind KV-event publishers at port 0 and expose the bound endpoints
+    #55700 PR  [Feat][Frontend] Add Watchdog for Engine and Worker Monitoring
+    #51275     [RFC]: Race-free port management: pick ports at bind time, publish over an existing channel
+    #55575 PR  [Performance][Model] DeepSeek-V4: reuse fused post residual for aux hidden states
+    #52917 PR  [Core][Hardware][Arm] (All GPUs) Adaptive spin grace + bounded arch waits (aarch64 WFET, x86 WAITPKG) for shm_broadcast
+    #54406 PR  [Core] Pack execute_model SchedulerOutput for multiproc RPC
+[8] total=651 :: repo:vllm-project/vllm zmq "message lost" OR "request lost" OR dropped
+    #55763 PR  [Bugfix][KV Connector] Retry Mooncake bootstrap registration on timeout
+    #53899 PR  Support PLE-Offload for Qwen3.8-Flash-Next 
+    #54176 PR  [Feature][EPD] Support dynamic EPD (EC-connector) proxy
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #55707 PR  [Feature][Core][Frontend] Add ephemeral KV event endpoint discovery
+    #46121     [Performance]: Add a model-free microbenchmark for the frontend <-> EngineCore IPC path
+    #55679     [Feature]: KV cache events — bind-time ephemeral port allocation and a discovery API
+    #55844 PR  [Core][Frontend] Bind KV-event publishers at port 0 and expose the bound endpoints
+[9] total=58 :: repo:vllm-project/vllm completions arrive in waves OR burst concurrency
+    #57705 PR  [Bugfix][KVConnector] Fix MoRI-IO WRITE-mode requests stranded in WAITING_FOR_REMOTE_KVS
+    #55279     [Bug]: DFlash2 (dflash method) deterministic cumulative OOB — engine dies with CUDA IMA / Xid 31 after ~11k decode steps under sampling load (sm_80, v0.27.1)
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #57491 PR  [ROCm][DSv4.1] Keep the Engram tables in host memory on ROCm
+    #50045 PR  [KV Offloading] Back-pressure detection and remediation
+    #57431 PR  [Model][DCP] Decode context parallelism for Qwen4Exp QSA
+    #50252 PR  [Bugfix][Gemma4] Map stacked expert LoRA tensors onto the MoE parent module
+    #57519 PR  [Bugfix][Benchmark] Fail streams that end in a server error event
+[10] total=12 :: repo:vllm-project/vllm throughput cliff concurrency scheduler
+    #46329 PR  [Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #38256     [RFC]: Incremental MoE Expert Offloading — GPU Cache + Async Pipeline
+    #37754     [Bug] FlashInfer + MTP speculative decoding crashes on SM121 (DGX Spark) with GQA=16 model
+    #49011     [Feature]: nvfp4 KV cache on SM120 — flashinfer ships the kernels, vLLM isn't wired to them (working prototype, 245K ctx on a 5090)
+    #42948     [Bug]: Prefix-cache 0% hit on re-sent request — DeepSeek-V4-Flash hybrid groups lose all first-block cache keys on every request reassignment (DSv4 variant of #32802)
+    #52109     [Bug][ROCm/gfx942]: DeepSeek-V4-Flash silent retrieval corruption for prompts ≥ ~4-5k tokens (AITER sparse indexer)
+    #41663     [Bug]: XPU TP=2 on dual Intel Arc Pro B70 (Battlemage): GP fault + xe BCS engine reset reproduces in intel/vllm:0.17.0-xpu on Ubuntu 24.04 HWE 6.17
+[11] total=228 :: repo:vllm-project/vllm GDN hybrid concurrency stall OR slow OR freeze
+    #46329 PR  [Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2
+    #54317     [Bug]: GLM-5.3-Flash (glm5next) — recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)
+    #57680     [Bug]: Decode throughput drops ~3.3x from 0.26.0 to 0.29.0 on H100 (Qwen3.6-35B-A3B-FP8, same config, same backends)
+    #53899 PR  Support PLE-Offload for Qwen3.8-Flash-Next 
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #53726     Silent CUDA IMA (exit 0) in hybrid GDN + MTP k=3 + async scheduling on RTX 3090; persists through #50021/#45100/#53613-class fixes
+    #52988 PR  [Spec decode] Support variable-length decode for Kimi-K3 adaptive ver
+    #57562     [Bug]: AsyncScheduler num_output_placeholders underflow with chunked prefill + concurrency (no spec decode, no preemption) — regression from 0.24.0
+[12] total=23 :: repo:vllm-project/vllm "linear attention" concurrent throughput degradation
+    #46329 PR  [Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #37429 PR   [Bugfix] Fix KV cache sizing and allocation for hybrid Mamba/attention models
+    #40926     [Bug]: V1 engine + MTP + GLM-5.1 (DSA + MoE + MLA) — workers hang under sustained traffic, sample_tokens RPC timeout, EngineDeadError
+    #53334     TurboQuant KV cache: two observations from an sm121 evaluation: hybrid-model init failure; fp16 zero-point overflow on large value outliers
+    #50682     [ROCm][AMD] Kimi-K3 Gap and Roadmap Tracking
+    #38182     [Bug]: Based on Qwen3.5-35B-A3B, why does enabling MTP speculative decoding actually reduce the prefix cache hit rate?
+    #40880     [Bug]: MTP × TurboQuant × CUDA graph capture produces degenerate output on Qwen3-Next hybrid (not closed by v7.13 ngram fix tree)
+[13] total=107 :: repo:vllm-project/vllm blocking EngineCore event loop
+    #53934 PR  [Elastic EP] Support Model Runner V2
+    #54317     [Bug]: GLM-5.3-Flash (glm5next) — recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)
+    #53899 PR  Support PLE-Offload for Qwen3.8-Flash-Next 
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #51360 PR  [Frontend] Add reusable TP1 initialized-engine snapshots
+    #51433 PR  [Engine Core] Gather engine notifications from workers to frontends
+    #55700 PR  [Feat][Frontend] Add Watchdog for Engine and Worker Monitoring
+    #56874 PR  [KVConnector][NIXL] Opt-in per-layer overlapped WRITE-push for disaggregated KV transfer
+[14] total=31 :: repo:vllm-project/vllm "duplicate" prefill dp_rank
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #40704 PR  [ModelRunner V2] Speculative Decoding NGram GPU Implementations
+    #51581     [Bug][Spec Decode]: DFlash fused-KV projection calls F.linear on a sliced qkv_proj weight — breaks (and can silently corrupt) any weight-quantized drafter
+    #38476 PR  [Feature] TRITON_MLA_SPARSE backend for SM8x/11x/12x DSA Sparse MLA Support
+    #52307 PR  [Bugfix][Ray] Strip brackets from IPv6 node IP for MessageQueue connect_ip
+    #55729     [Bug][MooncakeConnector] Bootstrap registration timeout is fatal during slow rank-0 initialization
+    #55259     [RFC]: Optional native startup self-benchmarking for forward-pass performance characterization
+    #54392     [Bug]: PD-admitted Mamba request is spec-padded before prefill completes, then align split truncates the 8-token window to 5
+[15] total=1 :: repo:vllm-project/vllm async_llm output handler slow high concurrency
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+[16] total=580 :: repo:vllm-project/vllm "12 concurrent"
+    #57197 PR  [Bugfix][PP][Spec Decode] Complete pipeline-parallel auxiliary-state and warmup support
+    #49249 PR  [Bugfix] glm47 parser: tolerate missing opening <arg_value> tag
+    #55279     [Bug]: DFlash2 (dflash method) deterministic cumulative OOB — engine dies with CUDA IMA / Xid 31 after ~11k decode steps under sampling load (sm_80, v0.27.1)
+    #57680     [Bug]: Decode throughput drops ~3.3x from 0.26.0 to 0.29.0 on H100 (Qwen3.6-35B-A3B-FP8, same config, same backends)
+    #53899 PR  Support PLE-Offload for Qwen3.8-Flash-Next 
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #35492 PR  feat(responses): add WebSocket mode for Responses API
+    #42895     [Bug]: NIXL disagg fails for Qwen3.5 hybrid model when prefill TP4 and decode DP8 use different physical block sizes
+[17] total=439 :: repo:vllm-project/vllm scheduler does not run full batch concurrency
+    #57250 PR  [Core] structured generation mode for DiffusionGemma model (Jev-like)
+    #52677 PR  [Reasoning] Break repeating reasoning loops by forcing the reasoning end sequence
+    #48944 PR  [Spec Decode] Context-length-aware K in DSD (RFC #48627): extend num_speculative_tokens_per_batch_size with a ctx axis
+    #54442 PR  [Bugfix] Don't let a structured-output request sample from an unmasked row
+    #51052 PR  [KVConnector][MoRIIO] Transfer hybrid mamba/KDA recurrent state in READ mode
+    #46329 PR  [Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2
+    #55279     [Bug]: DFlash2 (dflash method) deterministic cumulative OOB — engine dies with CUDA IMA / Xid 31 after ~11k decode steps under sampling load (sm_80, v0.27.1)
+    #53899 PR  Support PLE-Offload for Qwen3.8-Flash-Next 
+[18] total=24 :: repo:vllm-project/vllm chunked preemption throughput collapse
+    #46329 PR  [Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #53726     Silent CUDA IMA (exit 0) in hybrid GDN + MTP k=3 + async scheduling on RTX 3090; persists through #50021/#45100/#53613-class fixes
+    #38256     [RFC]: Incremental MoE Expert Offloading — GPU Cache + Async Pipeline
+    #54705 PR  [Feature][Model][Kernel] Inkling: fp8 e4m3 KV cache with per-tensor scales on SM100
+    #53480     [Bug][XPU]: Silent persistent output corruption (endless "!" / token 0) under sustained concurrent decode on Arc Pro B70, W4A16 27B head_dim 256
+    #56815     [Bug]: Silent ctx-load decode flake on single-GPU Qwen4Exp PLE CPU-offload — nightly range eed1f3d0→dc36fcce (#56512 ruled out)
+    #50576     [Feature]: SM8x (Ampere A100/A800) support for DeepSeek-V4-Flash / DeepSeek-V4-Flash-0731 DSpark
+[19] total=62 :: repo:vllm-project/vllm "KV cache" groups hybrid preemption
+    #53298 PR  [Bugfix][KV Connector] Restore state after KV load rejection
+    #46329 PR  [Attention][Quantization] NVFP4 KV cache on consumer/SoC Blackwell (sm120/sm121) for Gemma 3/4 via FlashInfer FA2
+    #54317     [Bug]: GLM-5.3-Flash (glm5next) — recurring CUDA illegal memory access on 4xB200, surfacing in three unrelated kernels (KDA linear-attention, MHC TileLang, TRT-LLM fused MoE)
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #56983 PR  [Spec Decode][Model] Support DFlash2 draft models with GLM-5.3-Flash
+    #57103     [RFC]: Programmable KV Cache: Composable Policies for Agentic Serving
+    #54076 PR  [Bugfix][V1] Use the Mamba cache group's block size for align-mode chunk splitting
+    #57187     [RFC]: Scheduler-Aware Multi-Tier KV Caching for vLLM with MORI-UMBP
+[20] total=39 :: repo:vllm-project/vllm EngineCore stuck input queue
+    #41834 PR  [New Model][Nvidia] Add SM12x support for DeepSeek V4 Flash with essential fixes
+    #49238     [Bug]: Decode instance segfaults on NIXL `loadRemoteMD` after prefill pod restarts in P/D disaggregation
+    #49628 PR  [V1][Observability] Add opt-in diagnostics for stalled engine stages
+    #56696     [Bug]: --otlp-traces-endpoint initializes tracer but never sends spans (instrument_otel/manual_instrument_otel never invoked)
+    #36130 PR  [Feature][BugFix] Add opt-in request watchdog to abort stuck requests
+    #17676     [Bug]: vLLM hangs forever on waiting engine process to start
+    #38476 PR  [Feature] TRITON_MLA_SPARSE backend for SM8x/11x/12x DSA Sparse MLA Support
+    #40926     [Bug]: V1 engine + MTP + GLM-5.1 (DSA + MoE + MLA) — workers hang under sustained traffic, sample_tokens RPC timeout, EngineDeadError
+
+Saved to C:\Users\imrya\flashnext-recipe\docs\gh_sweep_results.json
