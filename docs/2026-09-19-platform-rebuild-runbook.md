@@ -89,6 +89,20 @@ conservative choice: the thread's stable+fast configuration is on this line, and
    `cat /etc/os-release | head -3` matches the box.
 3. Configure: hostname, static IP, key-based SSH, timezone (`timedatectl`), apt update/upgrade
    baseline.
+4. **WEIGHTS DOWNLOAD FIRST — the critical path starts the moment the fresh OS has network and a
+   filesystem, BEFORE OMIX, before anything else (2026-09-20 directive).** 169 GB from HF is
+   hours; OMIX install and container reconstruction are minutes-to-an-hour. Start it unattended
+   and let the rest of the stack install while it runs:
+   ```bash
+   mkdir -p /home/bonz/hf-int4 && nohup env HF_HOME=/home/bonz/hf-int4 bash dl-int4.sh > /tmp/dl-int4.log 2>&1 &
+   ```
+   `dl-int4.sh` (scout/) is **revision-pinned** to `4c67bf686b7f7fd386bae6b07ab59e8ff1d5b897`
+   (the pre-wipe serving snapshot) — guarantees byte-identical weights regardless of what Intel
+   pushes to `main` (HF blobs are content-hash-named). Verify after download against the
+   preserved manifest `evidence/2026-09-20/weights-identity/blobs-manifest.txt` (29 blobs,
+   largest 102400512256 B). Nothing blocks on it: OMIX (2.3+), container build (3), and the vLLM
+   pip installs proceed during the download; every ladder gate needs the weights present (L1
+   boots the engine), so the ladder starts only after it completes.
 
 ### 2.2 Firmware / GuC discipline (record, don't reflexively touch)
 
