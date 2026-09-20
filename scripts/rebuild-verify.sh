@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# rebuild-verify.sh — runbook L1-L5 verification ladder as ONE gate script (docs/2026-09-19-platform-rebuild-runbook.md sec 4).
+# Usage: ./rebuild-verify.sh (env: PORT= MODEL= MNS= CONTAINER= BURSTS=). Windows-authored: if bash errors, sed -i 's/\r$//' $0
+set -uo pipefail   # no set -e: probes/restarts handled explicitly below
+# ------------- parameters (env-overridable) -------------
+PORT=${PORT:-8021}; MODEL=${MODEL:-qwen3.8-flash-next}       # SERVED_MODEL_NAME
+MNS=${MNS:-16}; CONTAINER=${CONTAINER:-qwen38-flash-next}; BURSTS=${BURSTS:-15}
+CONC=${CONC:-8}; READY_TIMEOUT=${READY_TIMEOUT:-1800}        # L1 /v1/models poll cap (s)
+ENGINE_LOG=${ENGINE_LOG:-.run/server.log}  # TODO-RYAN: confirm path from the engine dir
+STALLSPY_CYCLES=${STALLSPY_CYCLES:-75}; STALLSPY_CADENCE=${STALLSPY_CADENCE:-5}; STALLSPY_MAX=${STALLSPY_MAX:-300}; STALLSPY_TIMEOUT=${STALLSPY_TIMEOUT:-900}  # L3 loop/dumper cap (s)
+STALL_MIN=200   # L3 gate floor (runbook text targets >=300)
+VLLM_SP=/opt/venv/lib/python3.12/site-packages/vllm
+API=http://localhost:${PORT}; DUMP_DIR=/tmp/rebuild-verify-dumps; TEE_LOG=${TEE_LOG:-/tmp/rebuild-verify.log}
+exec > >(tee -a "$TEE_LOG") 2>&1
+echo "$(date -u +%FT%TZ) === rebuild-verify start (PORT=$PORT MODEL=$MODEL MNS=$MNS BURSTS=$BURSTS) ==="
+say(){ printf '%s\n' "$*"; }; warn(){ say "WARN: $*"; }
+DOCKER_OK=0; command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && DOCKER_OK=1
+[[ $DOCKER_OK -eq 1 ]] || warn "no docker/daemon — container-local steps will SKIP"
+CE(){ [[ $DOCKER_OK -eq 1 ]] && docker exec "$CONTAINER" sh -c "$1" 2>/dev/null; }
+elog(){ if [[ -s "$ENGINE_LOG" ]]; then cat "$ENGINE_LOG"; elif [[ $DOCKER_OK -eq 1 ]]; then docker logs "$CONTAINER" 2>/dev/null; fi; }
+gen_code(){ curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "$API/v1/completions" -H 'Content-Type: application/json' -d "{\"model\":\"$MODEL\",\"prompt\":\"hi\",\"max_tokens\":1,\"temperature\":0}" 2>/dev/null || echo 000; }
+gen_probe(){ local i c; for i in 1 2 3; do c=$(gen_code); [[ "$c" == "200" ]] && return 0; say "  gen-probe #$i: HTTP $c (engine busy/restarting?)"; sleep 10; done; return 1; }  # engine-true health (runbook sec 6)
+complete(){ curl -s -m 90 -X POST "$API/v1/completions" -H 'Content-Type: application/json' -d "{\"model\":\"$MODEL\",\"prompt\":\"$1\",\"max_tokens\":$2,\"temperature\":0}" 2>/dev/null; }
+SOAK=/tmp/rebuild-verify-soakfix.py   # reuse /tmp/soakfix.py when URLs match, else parameterized inline copy (host-side; runbook 3.0.1 ok)
+soak_setup(){
+  if [[ -f /tmp/soakfix.py ]] && grep -q "localhost:$PORT" /tmp/soakfix.py && grep -q "\"$MODEL\"" /tmp/soakfix.py; then cp /tmp/soakfix.py "$SOAK"; else
+    cat > "$SOAK" <<'PYEOF'
+import json,os,sys,time
+import urllib.request,concurrent.futures as cf
+URL=os.environ.get("SOAK_URL","http://localhost:8021/v1/completions");BASE=URL.rsplit("/v1/completions",1)[0]
+MODEL=os.environ.get("SOAK_MODEL","qwen3.8-flash-next")
+P=json.dumps({"model":MODEL,"prompt":"The history of computing began when humans first learned to count. Write a detailed technical essay about the development of computing machinery.","max_tokens":600,"temperature":0}).encode()
+def one(_):
+ try:
+  with urllib.request.urlopen(urllib.request.Request(URL,data=P,headers={"Content-Type":"application/json"}),timeout=500) as r:return json.loads(r.read())["usage"]["completion_tokens"],0
+ except Exception:return 0,1
+n=int(sys.argv[1]);ags=[];sus=[]
+for t in ("r1","r2","r3","r4"):
+ t0=time.time()
+ with cf.ThreadPoolExecutor(max_workers=n) as ex:res=list(ex.map(one,range(n)))
+ w=time.time()-t0;toks=sum(x[0] for x in res);e=sum(x[1] for x in res);a=toks/w if w else 0.0
+ print("%s round: tok=%d errs=%d wall=%.1fs agg=%.1f"%(t,toks,e,w,a));ags.append(a)
+ if t!="r1":sus.append(a)
+try:
+ with urllib.request.urlopen(BASE+"/v1/models",timeout=8) as x:post=x.status
+except Exception:post=0
+print("summary: sustained_agg=%.1f (r2-r4) mean_agg=%.1f min_agg=%.1f max_agg=%.1f post_models=%d"%(sum(sus)/len(sus) if sus else 0,sum(ags)/len(ags),min(ags),max(ags),post))
+PYEOF
+  fi
+}
+soak_run(){ SOAK_URL="$API/v1/completions" SOAK_MODEL="$MODEL" python3 "$SOAK" "$1" 2>&1; }
+l1(){ # BOOT: READY + boot provenance + in-container canaries + capture-size coverage
+  say "=== L1 BOOT ==="
+  local dl=$(( $(date +%s) + READY_TIMEOUT ))
+  while :; do
+    if [[ $DOCKER_OK -eq 1 ]] && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER"; then say "  note: container not listed (restart window?) — probe loop continues"; fi
+    if curl -fsS -m 10 "$API/v1/models" 2>/dev/null | grep -q "$MODEL"; then break; fi
+    (( $(date +%s) > dl )) && { say "FAIL[L1]: no /v1/models READY within ${READY_TIMEOUT}s (log: $ENGINE_LOG)"; return 1; }
+    sleep 15
+  done
+  say "L1: /v1/models READY ($MODEL)"
+  local st; st=$(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null || echo UNKNOWN)
+  say "L1 provenance: StartedAt=$st (boot epoch) | boot_clock=$(grep -m1 -oE '\"boot_id\"[^,}]*' .run/boot_clock.jsonl 2>/dev/null || echo '<unparsed — TODO-RYAN: exact boot_clock.jsonl key>') | uptime=$(cut -d' ' -f1 /proc/uptime)s"
+  gen_probe || { say "FAIL[L1]: /v1/models 200 but 1-token gen failed (EngineCore dead — runbook blindspot)"; return 1; }
+  if [[ $DOCKER_OK -ne 1 ]]; then say "L1 canaries+capture: SKIP (no docker)"; return 0; fi
+  local c1 c2 c3 c4
+  c1=$(CE "grep -c V3RUNNER $VLLM_SP/v1/ple_offload/connector.py"); c2=$(CE "grep -c V3RUNNER $VLLM_SP/v1/worker/gpu/model_runner.py"); c3=$(CE "grep -c V3BGDN $VLLM_SP/v1/attention/backends/gdn_attn.py"); c4=$(CE "grep -c V3BSC $VLLM_SP/v1/attention/backends/short_conv_attn.py")
+  say "  canaries: V3RUNNER connector=$c1 (want 7) model_runner=$c2 (want 1) V3BGDN=$c3 (>=1) V3BSC=$c4 (>=1)"
+  { [[ "$c1" == "7" && "$c2" == "1" && "$c3" -ge 1 && "$c4" -ge 1 ]]; } || { say "FAIL[L1]: canary mismatch (P3/P4/P5 not applied?)"; return 1; }
+  local cap cap_n cap_last cap_cnt
+  cap=$(elog | grep -oE 'cudagraph_capture_sizes[^]]*\]' | tail -1)
+  [[ -n "$cap" ]] || { say "FAIL[L1]: 'cudagraph_capture_sizes' not in engine log"; return 1; }
+  cap_n=$(printf '%s' "$cap" | grep -oE '[0-9]+' | wc -l | tr -d ' '); cap_last=$(printf '%s' "$cap" | grep -oE '[0-9]+' | tail -1)
+  cap_cnt=$(elog | grep -cE 'Capturing CUDA graphs \(FULL\)' || true)
+  say "  capsizes: '$cap' n=$cap_n last=$cap_last MNS=$MNS FULL-lines=$cap_cnt"
+  # TODO-RYAN: engine may emit ONE summary line 'FULL: N/N' instead of N per-size lines; if so, gate on
+  # the '/N' denominator == list length instead of line count. Task-specified rule used here:
+  [[ "$cap_n" -ge 1 && "$cap_last" == "$MNS" && "$cap_cnt" == "$cap_n" ]] || { say "FAIL[L1]: capture list does not cover MNS or FULL count != list length"; return 1; }
+  say "L1 PASS: READY, canaries 7/1/1/1, captures 1..${MNS}"
+}
+l2(){ # KNOWN-ANSWER: Paris + alphabet + engine alive post-probe
+  say "=== L2 KNOWN-ANSWER ==="
+  local body o
+  body=$(complete 'The capital of France is' 12)
+  printf '%s' "$body" | grep -q 'Paris' || { say "FAIL[L2]: 'Paris' absent: $(printf '%s' "$body" | head -c 200)"; return 1; }
+  say "  L2: France -> Paris OK"
+  body=$(complete 'The alphabet in order: ' 12)
+  o=$(printf '%s' "$body" | grep -oE '"text": *"[^"]*"' | head -1 | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')
+  printf '%s' "$o" | grep -Eq 'a[^a-z]*b[^b-z]*c' || { say "FAIL[L2]: alphabet order wrong: '$o'"; return 1; }
+  say "  L2: alphabet ordered OK ('$o')"
+  gen_probe || { say "FAIL[L2]: engine dead after known-answer"; return 1; }
+  say "L2 PASS"
+}
+l3(){ # L0-ABSENCE: py-spy proof — >=200 dumps, 0 x appendUSMMemcpy
+  say "=== L3 L0-ABSENCE ==="
+  if [[ $DOCKER_OK -ne 1 ]]; then say "L3 SKIP: no docker — cannot py-spy inside the container"; L3_MODE=SKIP; return 0; fi
+  if ! CE '/opt/venv/bin/py-spy --version' | grep -q 'py-spy'; then
+    local wheel; wheel=$(ls /tmp/pyspywheel/py_spy*.whl 2>/dev/null | head -1)
+    if [[ -z "$wheel" ]]; then
+      say "  WARN: py-spy missing, no wheel — downloading py-spy==0.4.2 (runbook 2.5 #6)"
+      mkdir -p /tmp/pyspywheel
+      ( python3 -m pip download -q -d /tmp/pyspywheel py-spy==0.4.2 || pip3 download -q -d /tmp/pyspywheel py-spy==0.4.2 ) >/dev/null 2>&1 || true
+      wheel=$(ls /tmp/pyspywheel/py_spy*.whl 2>/dev/null | head -1)
+    fi
+    [[ -n "$wheel" ]] || { say "FAIL[L3]: cannot obtain py-spy wheel (pip download failed)"; return 1; }
+    docker cp "$wheel" "$CONTAINER:/tmp/pyspywheel.whl" >/dev/null 2>&1 || { say "FAIL[L3]: docker cp of py-spy wheel"; return 1; }
+    CE '/opt/venv/bin/pip install --quiet --force-reinstall /tmp/pyspywheel.whl >/dev/null 2>&1' || { say "FAIL[L3]: pip install py-spy in container"; return 1; }
+    say "  L3: py-spy installed from $wheel"
+  else say "  L3: py-spy already in container"; fi
+  local pids; pids=$(CE "ps -eo pid=,args= | grep -iE 'vllm|python' | grep -v grep | awk '{print \$1}'")
+  [[ -n "$pids" ]] || { say "FAIL[L3]: no worker/engine pids in container"; return 1; }
+  say "  L3: dump loop over pids $(printf '%s' "$pids" | tr '\n' ' ') (${STALLSPY_CYCLES} cycles x${STALLSPY_CADENCE}s, gate >= $STALL_MIN dumps)"
+  rm -rf "$DUMP_DIR"; mkdir -p "$DUMP_DIR"
+  ( # stallspy-style dumper (bg; py-spy via docker exec, output lands on host)
+    local n=0 t0=$SECONDS p
+    while (( n < STALLSPY_MAX && SECONDS - t0 < STALLSPY_TIMEOUT )); do
+      for p in $pids; do timeout 20 docker exec "$CONTAINER" /opt/venv/bin/py-spy dump --pid "$p" > "$DUMP_DIR/d_${n}_p${p}.dump" 2>/dev/null || true; n=$((n+1)); done
+      sleep "$STALLSPY_CADENCE"
+    done
+  ) &
+  local dp=$!; sleep 2
+  say "  L3: dumper armed — firing 1 burst (${CONC}-way x 4 rounds x 600 tok)..."
+  soak_run "$CONC" >/dev/null 2>&1 || true
+  local have=0 i=0
+  while (( i < 120 )); do have=$(ls "$DUMP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' '); (( have >= STALL_MIN )) && break; sleep 5; i=$((i+1)); done
+  kill "$dp" 2>/dev/null; wait "$dp" 2>/dev/null
+  have=$(ls "$DUMP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' ')
+  (( have >= STALL_MIN )) || { say "FAIL[L3]: only ${have} dumps (< ${STALL_MIN}, dumper cap ${STALLSPY_TIMEOUT}s)"; return 1; }
+  local hit
+  hit=$(grep -lE 'appendUSMMemcpy' "$DUMP_DIR"/*.dump 2>/dev/null | tr '\n' ' ')   # also covers ur_command_list_manager::appendUSMMemcpy
+  [[ -n "$hit" ]] && { say "FAIL[L3]: appendUSMMemcpy in $(printf '%s' "$hit" | tr ' ' '\n' | wc -l) dumps: $hit"; return 1; }
+  hit=$(grep -lE 'libur_adapter_level_zero_v2' "$DUMP_DIR"/*.dump 2>/dev/null | tr '\n' ' ')
+  [[ -n "$hit" ]] && { say "FAIL[L3]: libur_adapter_level_zero_v2 in: $hit"; return 1; }
+  say "L3 PASS: ${have} dumps, 0 appendUSMMemcpy / 0 libur_adapter_level_zero_v2 (ref 0/170 v24f)"
+}
+l4(){ # CAMPAIGN: BURSTS bursts; zero errs, zero non-200 post-probes, zero stalls (round wall < 400s)
+  say "=== L4 CAMPAIGN (${BURSTS} bursts x ${CONC}-way x 4 rounds x 600 tok) ==="
+  pgrep -f 'wedge-watchdog' >/dev/null 2>&1 && say "  L4: wedge-watchdog process present (runbook wants v2.5)" || warn "no wedge-watchdog process — runbook L4 requires v2.5 live; verify manually (continuing)"
+  local i out errs bad sust post ed_now ed_base stalls=0 tot_errs=0 aggs="" k
+  ed_base=$(elog | grep -cE 'EngineDead|TimeoutError' || true)
+  for ((i=1;i<=BURSTS;i++)); do
+    say "  --- burst $i/$BURSTS ---"
+    out=$(soak_run "$CONC")
+    errs=$(printf '%s' "$out" | grep -oE 'errs=[0-9]+' | awk -F= '{s+=$2} END{print s+0}')
+    bad=$(printf '%s' "$out" | grep -oE 'wall=[0-9.]+s' | awk -F'[=s]' '$2+0>=400' | wc -l | tr -d ' ')
+    sust=$(printf '%s' "$out" | grep -oE 'sustained_agg=[0-9.]+' | tail -1 | cut -d= -f2); [[ -z "$sust" ]] && sust=0
+    post=000
+    for k in 1 2 3 4 5 6; do post=$(gen_code); [[ "$post" == "200" ]] && break; sleep 15; done
+    ed_now=$(elog | grep -cE 'EngineDead|TimeoutError' || true)
+    if (( errs > 0 || bad > 0 || post != 200 || ed_now > ed_base )); then
+      stalls=$((stalls+1)); say "  burst $i: STALL (errs=$errs walls>=400s=$bad post=$post EngineDead/TO +$((ed_now-ed_base)))"
+    else say "  burst $i: sustained=$sust errs=0 post=200"; fi
+    tot_errs=$((tot_errs+errs)); aggs="$aggs $sust"; ed_base=$ed_now
+  done
+  local overall
+  overall=$(awk -v a="$aggs" 'BEGIN{n=split(a,x," "); s=0; for(i=1;i<=n;i++) s+=x[i]; if(n) printf "%.1f", s/n; else print "n/a"}')
+  say "  L4 overall: sustained per burst=$aggs | mean=$overall | total_errs=$tot_errs | stalls=$stalls/${BURSTS}"
+  say "  L4 decision rule (pre-registered): 0 stalls=PASS-SHIP | 1=INVESTIGATE | >=2=FAIL"
+  (( stalls == 0 )) && { say "L4 PASS-SHIP"; return 0; }
+  (( stalls == 1 )) && { say "FAIL[L4]: 1 stall — INVESTIGATE before shipping (runbook 0-1 caveat noted)"; return 1; }
+  say "FAIL[L4]: $stalls stalls >= 2 — fix ineffective, lock diagnostics"; return 1
+}
+l5(){ # MTP LADDER: report-only (no gate) — .env flips + boots are manual
+  say "=== L5 MTP LADDER (report-only) ==="
+  if elog | grep -q 'SpecDecoding metrics'; then
+    say "  SpecDecoding metrics (vLLM 0.26.1 lineage, SpecDecodingLogging.log), latest:"
+    elog | grep 'SpecDecoding metrics' | tail -1
+  else
+    say "  SKIP: no 'SpecDecoding metrics' in engine log — need (a) MTP1 speculative-config on, (b) --disable-log-stats off, (c) engine active during the stats window (VLLM_LOG_STATS_INTERVAL, default 10s). Scheduler-side counts from generated_token_ids — valid across runner A/Bs."
+  fi
+  cat <<'EOF'
+  Manual steps (runbook sec 4 L5 — NOT attempted here; each = .env edit + reboot):
+    1) MTP0 baseline: 1x soakfix 8-way x4x600 vs pre-rebuild anchor boot rel0027 (v24h2,
+       MNS16: sustained 314.5/310.4/320.1, mean 275.9, 0 stalls).
+    2) MTP1+graphs capture-fault check: .env VLLM_XPU_ENABLE_XPU_GRAPH=1 AND
+       SYCL_UR_USE_LEVEL_ZERO_V2=0; reboot (runbook 2.2), start engine, 1 burst; grep
+       'SpecDecoding metrics' for mean acceptance length + avg draft acceptance rate
+       (SKIP-note conditions if absent). Capture must NOT wedge (boot 4010612 must not
+       recur — P4/P5 removed the mid-capture D2H).
+    3) Record numbers with boot ID + stack version (sec 6). Do NOT default MTP1+graphed
+       until the capture ladder shows no fault. Re-run this script for L1/L2 after each flip.
+EOF
+}
+# ------------------------------- ladder driver + verdict ------------------------
+L1S=NOT-RUN; L2S=NOT-RUN; L3S=NOT-RUN; L4S=NOT-RUN; L5S=PASS; L3_MODE=
+soak_setup
+if l1; then L1S=PASS; else L1S=FAIL; fi
+if [[ "$L1S" == "PASS" ]]; then if l2; then L2S=PASS; else L2S=FAIL; fi; fi
+if [[ "$L2S" == "PASS" ]]; then if l3; then [[ "$L3_MODE" == "SKIP" ]] && L3S=SKIP || L3S=PASS; else L3S=FAIL; fi; fi
+if [[ "$L3S" == "PASS" || "$L3S" == "SKIP" ]]; then if l4; then L4S=PASS; else L4S=FAIL; fi; fi
+l5   # report-only — always printed
+say ""; say "======================== FINAL VERDICT ========================"
+say "  L1 BOOT (ready+canaries+capture coverage): $L1S"
+say "  L2 KNOWN-ANSWER:                           $L2S"
+say "  L3 L0-ABSENCE (py-spy):                    $L3S"
+say "  L4 CAMPAIGN:                               $L4S"
+say "  L5 MTP LADDER:                             $L5S (report-only)"
+say "  boot_id (docker StartedAt): $(docker inspect -f '{{.State.StartedAt}}' "$CONTAINER" 2>/dev/null || echo UNKNOWN)"
+say "  boot_clock.jsonl: $(grep -m1 -oE '\"boot_id\"[^,}]*' .run/boot_clock.jsonl 2>/dev/null || echo '<unparsed — runbook sec 6>')"
+say "  kernel:           $(uname -r)"
+local_vx=$(CE 'pip show vllm-xpu-kernels 2>/dev/null | grep -iE "^Version"' | head -1); [[ -n "$local_vx" ]] || local_vx=UNKNOWN
+say "  vllm-xpu-kernels: $local_vx"
+local_guc=$( (dmesg 2>/dev/null || sudo -n dmesg 2>/dev/null) | grep -iE 'guc' | tail -2 | tr '\n' ' '); [[ -n "$local_guc" ]] || local_guc="unreadable (run: sudo dmesg | grep -i guc)"
+say "  GuC/firmware:     $local_guc"
+say "  result log:       $TEE_LOG"
+say "==================================================================="
+rc=0; for s in "$L1S" "$L2S" "$L3S" "$L4S"; do [[ "$s" == "PASS" || "$s" == "SKIP" ]] || rc=1; done   # SKIP = warned non-verification, not a failure
+exit $rc
