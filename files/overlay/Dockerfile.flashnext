@@ -121,6 +121,13 @@ RUN bash /tmp/p12-connector-cuda-import-guard.sh && rm /tmp/p12-connector-cuda-i
 COPY p13-ple-offload-xpu-gate.sh /tmp/p13-ple-offload-xpu-gate.sh
 RUN bash /tmp/p13-ple-offload-xpu-gate.sh && rm /tmp/p13-ple-offload-xpu-gate.sh
 
+# P14 — XPU PLE offload via pinned-CPU D2H: xpu storages have no torch
+# reducer (_share_filename_ crash at registration). Output buffer + sem
+# flag go to pinned CPU on xpu (FP8-era proven shape); worker copies
+# CPU->CPU; GPU stays source of truth via connector-thread D2H + events.
+COPY p14-ple-offload-xpu-pinning.sh /tmp/p14-ple-offload-xpu-pinning.sh
+RUN bash /tmp/p14-ple-offload-xpu-pinning.sh && rm /tmp/p14-ple-offload-xpu-pinning.sh
+
 # start.sh passes the full command (/opt/venv/bin/vllm serve ...) — the image
 # must NOT impose an entrypoint (golden rule: command carries the server).
 ENTRYPOINT []
