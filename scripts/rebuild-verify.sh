@@ -4,7 +4,9 @@
 set -uo pipefail   # no set -e: probes/restarts handled explicitly below
 PORT=${PORT:-8021}; MODEL=${MODEL:-qwen3.8-flash-next}       # SERVED_MODEL_NAME
 MNS=${MNS:-16}; CONTAINER=${CONTAINER:-qwen38-flash-next}; BURSTS=${BURSTS:-15}
-CONC=${CONC:-8}; READY_TIMEOUT=${READY_TIMEOUT:-1800}; ENGINE_LOG=${ENGINE_LOG:-.run/server.log}  # L1 poll cap (s); engine-log path VERIFIED live 2026-09-20 (fn-recipe-int4/.run/server.log)
+CONC=${CONC:-8}; CONC3=${CONC3:-8}; CONC4=${CONC4:-16}   # L3 burst width / L4 campaign width (overnight plan: 8 / 16)
+LADDER=${LADDER:-full}   # full | L1 | L1,L2,L3 | L4 | L3,L4 — comma list of gates to run (L5 always report-only)
+READY_TIMEOUT=${READY_TIMEOUT:-1800}; ENGINE_LOG=${ENGINE_LOG:-.run/server.log}  # L1 poll cap (s); engine-log path VERIFIED live 2026-09-20 (fn-recipe-int4/.run/server.log)
 STALLSPY_CYCLES=${STALLSPY_CYCLES:-75}; STALLSPY_CADENCE=${STALLSPY_CADENCE:-5}; STALLSPY_MAX=${STALLSPY_MAX:-300}; STALLSPY_TIMEOUT=${STALLSPY_TIMEOUT:-900}; STALL_MIN=200  # L3 loop/dumper cap (s); gate floor (runbook targets >=300)
 VLLM_SP=/opt/venv/lib/python3.12/site-packages/vllm
 API=http://localhost:${PORT}; DUMP_DIR=/tmp/rebuild-verify-dumps; TEE_LOG=${TEE_LOG:-/tmp/rebuild-verify.log}
@@ -132,8 +134,8 @@ l3(){ # L0-ABSENCE: py-spy proof — >=200 dumps, 0 x appendUSMMemcpy
     done
   ) &
   local dp=$!; sleep 2
-  say "  L3: dumper armed — firing 1 burst (${CONC}-way x 4 rounds x 600 tok)..."
-  soak_run "$CONC" >/dev/null 2>&1 || true
+  say "  L3: dumper armed — firing 1 burst (${CONC3}-way x 4 rounds x 600 tok)..."
+  soak_run "$CONC3" >/dev/null 2>&1 || true
   local have=0 i=0; while (( i < 120 )); do have=$(ls "$DUMP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' '); (( have >= STALL_MIN )) && break; sleep 5; i=$((i+1)); done
   kill "$dp" 2>/dev/null; wait "$dp" 2>/dev/null
   have=$(ls "$DUMP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' ')
@@ -170,7 +172,7 @@ l4(){ # CAMPAIGN: BURSTS bursts; zero errs, zero non-200 post-probes, zero stall
   ed_base=$(elog | grep -cE 'EngineDead|TimeoutError' || true)
   for ((i=1;i<=BURSTS;i++)); do
     say "  --- burst $i/$BURSTS ---"
-    out=$(soak_run "$CONC")
+    out=$(soak_run "$CONC4")
     errs=$(printf '%s' "$out" | grep -oE 'errs=[0-9]+' | awk -F= '{s+=$2} END{print s+0}')
     bad=$(printf '%s' "$out" | grep -oE 'wall=[0-9.]+s' | awk -F'[=s]' '$2+0>=400' | wc -l | tr -d ' ')
     sust=$(printf '%s' "$out" | grep -oE 'sustained_agg=[0-9.]+' | tail -1 | cut -d= -f2); [[ -z "$sust" ]] && sust=0
@@ -211,10 +213,11 @@ EOF
 # ------------------------------- ladder driver + verdict ------------------------
 L1S=NOT-RUN; L2S=NOT-RUN; L3S=NOT-RUN; L4S=NOT-RUN; L5S=PASS; L3_MODE=
 soak_setup
-if l1; then L1S=PASS; else L1S=FAIL; fi
-if [[ "$L1S" == "PASS" ]]; then if l2; then L2S=PASS; else L2S=FAIL; fi; fi
-if [[ "$L2S" == "PASS" ]]; then if l3; then [[ "$L3_MODE" == "SKIP" ]] && L3S=SKIP || L3S=PASS; else L3S=FAIL; fi; fi
-if [[ "$L3S" == "PASS" || "$L3S" == "SKIP" ]]; then if l4; then L4S=PASS; else L4S=FAIL; fi; fi
+WANT(){ printf '%s' ",$LADDER," | grep -qi ",$1,"; }
+if WANT L1; then if l1; then L1S=PASS; else L1S=FAIL; fi; else L1S=SKIP-SEL; fi
+if [[ "$L1S" == "PASS" ]] && WANT L2; then if l2; then L2S=PASS; else L2S=FAIL; fi; else [[ "$L2S" == "NOT-RUN" ]] && L2S=SKIP-SEL; fi
+if [[ "$L2S" == "PASS" ]] && WANT L3; then if l3; then [[ "$L3_MODE" == "SKIP" ]] && L3S=SKIP || L3S=PASS; else L3S=FAIL; fi; else [[ "$L3S" == "NOT-RUN" ]] && L3S=SKIP-SEL; fi
+if [[ "$L3S" == "PASS" || "$L3S" == "SKIP" || "$L3S" == "SKIP-SEL" ]] && WANT L4; then if l4; then L4S=PASS; else L4S=FAIL; fi; else [[ "$L4S" == "NOT-RUN" ]] && L4S=SKIP-SEL; fi
 l5   # report-only — always printed
 say "======================== FINAL VERDICT ========================"
 say "  L1 BOOT (ready+canaries+capture coverage): $L1S"
@@ -231,5 +234,5 @@ local_guc=$( (dmesg 2>/dev/null || sudo -n dmesg 2>/dev/null) | grep -iE 'guc' |
 say "  GuC/firmware:     $local_guc"
 say "  result log:       $TEE_LOG"
 say "==================================================================="
-rc=0; for s in "$L1S" "$L2S" "$L3S" "$L4S"; do [[ "$s" == "PASS" || "$s" == "SKIP" ]] || rc=1; done   # SKIP = warned non-verification, not a failure
+rc=0; for s in "$L1S" "$L2S" "$L3S" "$L4S"; do [[ "$s" == "PASS" || "$s" == "SKIP" || "$s" == "SKIP-SEL" ]] || rc=1; done   # SKIP = warned non-verification; SKIP-SEL = not selected via LADDER; neither is a failure
 exit $rc
