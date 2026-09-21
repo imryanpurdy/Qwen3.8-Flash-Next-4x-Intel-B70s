@@ -1,0 +1,94 @@
+# ============================================================================
+# Dockerfile — Qwen3.8-Flash-Next INT4 on 4x Arc Pro B70 (TP4+EP4)
+# STATED BASE (2026-09-21): DLE 2026.1 userspace + fork-from-source.
+#   - intel/omix:0.4.0-devel-ubuntu24.04 = OMIX 0.4.0 = DLE 2026.1.3 userspace,
+#     oneCCL 2022.1.2 — the SAME stack stages 1-3 installed and verified on the
+#     host (icpx 2026.1, torch 2.13.0+xpu, triton-xpu 3.7.2).
+#   - vLLM: peakcrosser7/vllm fork, branch release/qwen38next_offload @
+#     357e054428cdb7dd697fa75024c548aced0efee8 (tip = merge of fork main, which
+#     carries 4e8b849b8d97 "fix PLE offload for async MRV2 scheduling" — the
+#     per-batch event-pool fix). Build-time assert proves it is in the tree.
+#   - NO v3/V3RUNNER patch. A/B: upstream fix alone must clear the connector
+#     L0 class under burst (L3 = 0/300 appendUSMMemcpy); hits => re-derive v3
+#     on the per-batch-event structure, not blind-patch.
+#   - P8 (G-E PATH A): vllm-xpu-kernels 0.1.15.3 upstream wheel (host receipt
+#     /data/omix-builds/vxk-receipt.txt, wheel sha256 0179f981...).
+#   - Torch/triton pins are the FORK's own requirements/xpu.txt values, which
+#     are exactly the host-verified stack (torch 2.13.0+xpu, triton 3.7.2).
+# ============================================================================
+FROM intel/omix:0.4.0-devel-ubuntu24.04
+
+ARG FORK_REF=357e054428cdb7dd697fa75024c548aced0efee8
+ARG FORK_REMOTE=https://github.com/peakcrosser7/vllm
+ARG TORCH_VERSION=2.13.0
+ARG TRITON_XPU_VERSION=3.7.2
+ARG VXK_VERSION=0.1.15.3
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      git cmake ninja-build build-essential ccache python3-dev python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+
+# /opt/venv — start.sh contract: command is /opt/venv/bin/vllm ...
+RUN python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+# Pinned XPU toolchain FIRST (explicit +xpu from the pytorch XPU index; never
+# let a later resolver silently grab a CPU wheel).
+RUN pip install --no-cache-dir "torch==${TORCH_VERSION}+xpu" \
+      --index-url https://download.pytorch.org/whl/xpu \
+ && pip install --no-cache-dir "triton-xpu==${TRITON_XPU_VERSION}" py-spy
+
+# Fork from source at the recorded release-branch tip (receipt printed).
+RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
+    git clone --filter=blob:none "${FORK_REMOTE}" /src/vllm \
+ && git -C /src/vllm checkout -q "${FORK_REF}" \
+ && echo "FORK_REF ${FORK_REF} = $(git -C /src/vllm log -1 --format='%h %s')"
+
+# Runtime deps from the fork's own requirements. The torch/triton lines are
+# stripped — they are already pinned above exactly as the fork specifies, and
+# leaving them would let pip pull a second (stock/CPU) triton alongside
+# triton-xpu, which the host stack does NOT have.
+# CONSTRAINTS: torchaudio/torchvision/torchcodec are UNPINNED in xpu.txt and
+# their latest releases DRAG torch to 2.14 (observed live 2026-09-21: image
+# came up torch 2.14.0+xpu / triton 3.8.0). The vxk 0.1.15.3 pairing is
+# torch 2.13.0+xpu (G-E) — constraints force the resolver to backtrack the
+# unpinned siblings instead of upgrading torch.
+RUN printf 'torch==2.13.0+xpu\ntriton-xpu==3.7.2\n' > /tmp/constraints.txt \
+ && sed -i '/^torch==/d; /^triton==/d' /src/vllm/requirements/xpu.txt \
+ && unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
+    pip install --no-cache-dir -c /tmp/constraints.txt -r /src/vllm/requirements/xpu.txt
+
+# vLLM from source — NON-editable so the patched fork package in site-packages
+# is the vllm the runtime loads. --no-deps: every dep is pinned above.
+RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
+    pip install --no-cache-dir --no-build-isolation --no-deps /src/vllm
+
+# BUILD-TIME ASSERT (verify, never assume): the 4e8b849b8d97 event-pool fix
+# must be present in the installed connector. Absence = wrong tree, HARD FAIL.
+RUN python -c "import importlib.util; loc = importlib.util.find_spec('vllm').submodule_search_locations[0]; src = open(loc + '/v1/ple_offload/connector.py').read(); assert '_d2h_event_pool' in src, '4e8b849b8d97 MISSING from connector.py'; assert 'maxsize=1' not in src, 'single-slot queue still present'; print('4e8b849b8d97 event-pool fix present in installed vllm:', loc)"
+
+# P8 — certified vxk wheel (G-E PATH A), version-gated + ops-registered gate.
+RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY no_proxy; \
+    pip install --no-cache-dir -c /tmp/constraints.txt "vllm-xpu-kernels==${VXK_VERSION}" \
+ && python -c "import importlib.metadata as md; v = md.version('vllm-xpu-kernels'); assert v == '0.1.15.3', f'vxk wheel drifted: {v}'; import vllm_xpu_kernels, vllm_xpu_kernels._C; print('vxk', v, 'import + ops registration OK')"
+
+# Identity receipts (fail loudly on any drift).
+RUN python -c "import torch, vllm, importlib.metadata as md; assert torch.__version__ == '2.13.0+xpu', 'torch drift: ' + torch.__version__; print('torch:', torch.__version__); print('vllm:', vllm.__version__); print('triton:', md.version('triton-xpu')); print('vllm-xpu-kernels:', md.version('vllm-xpu-kernels'))"
+
+# P9 — Qwen4Exp XPU guard: the fork blocks XPU with NotImplementedError
+# ("supports CUDA and ROCm only") at architecture resolution, added AFTER the
+# old box's tree (76cfe1cd) which ran this exact model on XPU. The fork targets
+# vxk by construction (xpu.txt pins torch 2.13.0/triton-xpu 3.7.2), so XPU
+# routes to the nvidia impl — same lineage that produced the 163-sustained
+# history. The amd impl requires FlashAttention/QSA and is not an XPU path.
+# TPU stays blocked. Patch is numbered (files/overlay convention), idempotent,
+# and hard-fails on guard-text drift.
+COPY p9-qwen4exp-xpu-guard.sh /tmp/p9-qwen4exp-xpu-guard.sh
+RUN bash /tmp/p9-qwen4exp-xpu-guard.sh && rm /tmp/p9-qwen4exp-xpu-guard.sh
+
+# start.sh passes the full command (/opt/venv/bin/vllm serve ...) — the image
+# must NOT impose an entrypoint (golden rule: command carries the server).
+ENTRYPOINT []
+CMD ["/bin/bash"]
