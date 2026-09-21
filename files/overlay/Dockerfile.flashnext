@@ -108,6 +108,13 @@ RUN bash /tmp/p10-ple-cuda-import-guard.sh && rm /tmp/p10-ple-cuda-import-guard.
 COPY p11-triton-single-provider.sh /tmp/p11-triton-single-provider.sh
 RUN bash /tmp/p11-triton-single-provider.sh && rm /tmp/p11-triton-single-provider.sh
 
+# P12 — same class as P10, second file: v1/ple_offload/connector.py imports
+# cuda.bindings unconditionally; gpu model_runner imports the connector at
+# module scope => every XPU worker dies ModuleNotFoundError 'cuda'. On XPU
+# the D2H sync is _d2h_event_pool; HostRegister is CUDA-worker-path only.
+COPY p12-connector-cuda-import-guard.sh /tmp/p12-connector-cuda-import-guard.sh
+RUN bash /tmp/p12-connector-cuda-import-guard.sh && rm /tmp/p12-connector-cuda-import-guard.sh
+
 # start.sh passes the full command (/opt/venv/bin/vllm serve ...) — the image
 # must NOT impose an entrypoint (golden rule: command carries the server).
 ENTRYPOINT []
