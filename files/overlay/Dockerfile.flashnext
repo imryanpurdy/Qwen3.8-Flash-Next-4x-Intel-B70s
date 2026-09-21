@@ -97,6 +97,17 @@ RUN bash /tmp/p9-qwen4exp-xpu-guard.sh && rm /tmp/p9-qwen4exp-xpu-guard.sh
 COPY p10-ple-cuda-import-guard.sh /tmp/p10-ple-cuda-import-guard.sh
 RUN bash /tmp/p10-ple-cuda-import-guard.sh && rm /tmp/p10-ple-cuda-import-guard.sh
 
+# P11 — ONE triton provider. The fork requirements layer pulls stock `triton`
+# (xgrammar dep) while torch 2.13.0+xpu pairs with `triton-xpu==3.7.2` (XPU
+# index); both dists ship the same triton/ tree and the second clobbers the
+# first => libtriton.intel ImportError => vllm disables Triton => "Model
+# Runner V2 requires Triton" boot failure. Constraints cannot exclude a
+# requirement by name, so this is enforced AFTER the requirements layer:
+# purge stock/pytorch triton, reinstall the torch-paired wheel, assert the
+# REAL property (backends import + intel extension + no stock dist + 3.7.2).
+COPY p11-triton-single-provider.sh /tmp/p11-triton-single-provider.sh
+RUN bash /tmp/p11-triton-single-provider.sh && rm /tmp/p11-triton-single-provider.sh
+
 # start.sh passes the full command (/opt/venv/bin/vllm serve ...) — the image
 # must NOT impose an entrypoint (golden rule: command carries the server).
 ENTRYPOINT []
