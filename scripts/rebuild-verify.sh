@@ -59,20 +59,38 @@ l1(){ # BOOT: READY + boot provenance + in-container canaries + capture-size cov
   say "L1 provenance: StartedAt=$st (boot epoch) | boot_clock=$(grep -m1 -oE '\"boot_id\"[^,}]*' .run/boot_clock.jsonl 2>/dev/null || echo 'no boot_clock.jsonl in this engine setup (verified 2026-09-20 — wd-decisions.jsonl is the only jsonl)') | uptime=$(cut -d' ' -f1 /proc/uptime)s"
   gen_probe || { say "FAIL[L1]: /v1/models 200 but 1-token gen failed (EngineCore dead — runbook blindspot)"; return 1; }
   if [[ $DOCKER_OK -ne 1 ]]; then say "L1 canaries+capture: SKIP (no docker)"; return 0; fi
-  local c1 c2 c3 c4
-  c1=$(CE "grep -c V3RUNNER $VLLM_SP/v1/ple_offload/connector.py"); c2=$(CE "grep -c V3RUNNER $VLLM_SP/v1/worker/gpu/model_runner.py"); c3=$(CE "grep -c V3BGDN $VLLM_SP/v1/attention/backends/gdn_attn.py"); c4=$(CE "grep -c V3BSC $VLLM_SP/v1/attention/backends/short_conv_attn.py")
-  say "  canaries: V3RUNNER connector=$c1 (want 7) model_runner=$c2 (want 1) V3BGDN=$c3 (>=1) V3BSC=$c4 (>=1)"
-  { [[ "$c1" == "7" && "$c2" == "1" && "$c3" -ge 1 && "$c4" -ge 1 ]]; } || { say "FAIL[L1]: canary mismatch (P3/P4/P5 not applied?)"; return 1; }
+  # v25 canary (v3 RETIRED — upstream 4e8b849b8d97 event-pool fix is the base):
+  # static: event pool in the installed connector, single-slot queue GONE.
+  # dynamic: per-rank connector registration lines in the engine log (want >=4 on TP4).
+  c1=$(CE "grep -c '_d2h_event_pool' $VLLM_SP/v1/ple_offload/connector.py"); c2=$(CE "grep -c 'maxsize=1' $VLLM_SP/v1/ple_offload/connector.py")
+  say "  canaries: _d2h_event_pool=$c1 (want >=5) maxsize=1=$c2 (want 0) [4e8b849b8d97 structure]"
+  { [[ "$c1" -ge 5 && "$c2" == "0" ]]; } || { say "FAIL[L1]: connector canary mismatch — wrong fork tree or 4e8b849b8d97 missing"; return 1; }
+  regn=$(elog | grep -c 'PleOffload: registered'); say "  canaries: PleOffload registered lines=$regn (want >=4 on TP4)"
+  [[ "$regn" -ge 4 ]] || { say "FAIL[L1]: connector did not register on all ranks (PleOffload registration < 4)"; return 1; }
+  # BOOT PROFILE (misread guard): L4 throughput baselines are profile-specific.
+  # The 163-sustained / 80 tok/s program numbers are GRAPHS-boot numbers; eager
+  # boots are CPU-launch-bound (old-stack eager reference: 4.6-4.9 batched
+  # steps/s) and MUST NOT be scored against graphs baselines.
+  local mmode mMTP
+  mmode=$(grep -oE '"graph_mode": *"[a-z]+"' .run/manifest.json 2>/dev/null | grep -oE '[a-z]+' | tail -1); mmode=${mmode:-unknown}
+  mMTP=$(grep -oE '"mtp_num_speculative_tokens": *"[0-9]+"' .run/manifest.json 2>/dev/null | grep -oE '[0-9]+' | tail -1); mMTP=${mMTP:-?}
+  BOOT_PROFILE="graphs=$mmode MTP=$mMTP"
+  elog | grep -q 'Capturing CUDA graphs' && BOOT_PROFILE="graphs=on MTP=$mMTP"
+  say "  boot profile: $BOOT_PROFILE (from manifest+engine log; graphs evidence = capture lines present)"
   local cap cap_n cap_last cap_cnt
+  if [[ "$BOOT_PROFILE" == graphs=on* ]]; then
   cap=$(elog | grep -oE 'cudagraph_capture_sizes[^]]*\]' | tail -1)
   [[ -n "$cap" ]] || { say "FAIL[L1]: 'cudagraph_capture_sizes' not in engine log"; return 1; }
   cap_n=$(printf '%s' "$cap" | grep -oE '[0-9]+' | wc -l | tr -d ' '); cap_last=$(printf '%s' "$cap" | grep -oE '[0-9]+' | tail -1)
   # Engine emits ONE tqdm completion line with N/N denominator (live-verified 2026-09-20: 'Capturing CUDA graphs (FULL): 100%|...| 10/10'),
-  # not per-size lines — gate on the final line's denominator == list length (\r progress fragments make raw line-count wrong).
+  # not per-size lines - gate on the final line's denominator == list length (CR progress fragments make raw line-count wrong).
   cap_cnt=$(elog | grep 'Capturing CUDA graphs (FULL)' | tail -1 | grep -oE '[0-9]+/[0-9]+' | tail -1 | cut -d/ -f2)
   say "  capsizes: '$cap' n=$cap_n last=$cap_last MNS=$MNS FULL-denominator=$cap_cnt"
   [[ "$cap_n" -ge 1 && "$cap_last" == "$MNS" && "$cap_cnt" == "$cap_n" ]] || { say "FAIL[L1]: capture list does not cover MNS or FULL denominator ($cap_cnt) != list length ($cap_n)"; return 1; }
-  say "L1 PASS: READY, canaries 7/1/1/1, captures $cap_cnt/$cap_n (per CAP_SIZES_LIST)"
+  else
+  say "  capsizes: SKIP — eager boot emits no capture lines (expected on this profile, NOT a regression; capture checks activate on the graphs-on boot)"
+  fi
+  say "L1 PASS: READY [$BOOT_PROFILE], connector canary OK (_d2h_event_pool=$c1, maxsize1=$c2, registered=$regn), captures $( [[ "$BOOT_PROFILE" == graphs=on* ]] && echo "$cap_cnt/$cap_n (per CAP_SIZES_LIST)" || echo SKIP-eager )"
 }
 l2(){ # KNOWN-ANSWER: Paris + alphabet + engine alive post-probe
   say "=== L2 KNOWN-ANSWER ==="
@@ -122,13 +140,31 @@ l3(){ # L0-ABSENCE: py-spy proof — >=200 dumps, 0 x appendUSMMemcpy
   (( have >= STALL_MIN )) || { say "FAIL[L3]: only ${have} dumps (< ${STALL_MIN}, dumper cap ${STALLSPY_TIMEOUT}s)"; return 1; }
   local hit
   hit=$(grep -lE 'appendUSMMemcpy' "$DUMP_DIR"/*.dump 2>/dev/null | tr '\n' ' ')   # also covers ur_command_list_manager::appendUSMMemcpy
-  [[ -n "$hit" ]] && { say "FAIL[L3]: appendUSMMemcpy in $(printf '%s' "$hit" | tr ' ' '\n' | wc -l) dumps: $hit"; return 1; }
+  if [[ -n "$hit" ]]; then
+    say "FAIL[L3]: appendUSMMemcpy in $(printf '%s' "$hit" | tr ' ' '\n' | wc -l) dumps: $hit"
+    for d in $hit; do say "  --- thread context: $d ---"; grep -B6 'appendUSMMemcpy' "$d" | head -12; done
+    say "  verdict input: connector-thread hits = the class v3 targeted (re-derive v3 on the per-batch-event structure); model/engine-thread hits = new class, do NOT blind-patch"
+    return 1
+  fi
   hit=$(grep -lE 'libur_adapter_level_zero_v2' "$DUMP_DIR"/*.dump 2>/dev/null | tr '\n' ' ')
   [[ -n "$hit" ]] && { say "FAIL[L3]: libur_adapter_level_zero_v2 in: $hit"; return 1; }
   say "L3 PASS: ${have} dumps, 0 appendUSMMemcpy / 0 libur_adapter_level_zero_v2 (ref 0/170 v24f)"
 }
 l4(){ # CAMPAIGN: BURSTS bursts; zero errs, zero non-200 post-probes, zero stalls (round wall < 400s)
-  say "=== L4 CAMPAIGN (${BURSTS} bursts x ${CONC}-way x 4 rounds x 600 tok) ==="
+  local profile; profile="graphs=? MTP=?"
+  [[ -f .run/manifest.json ]] && profile=$(python3 -c "import json; m=json.load(open('.run/manifest.json')); print('graphs=%s MTP=%s'%(m.get('graph_mode','?'),m.get('mtp_num_speculative_tokens','?')))" 2>/dev/null || echo "graphs=? MTP=?")
+  say "=== L4 CAMPAIGN (${BURSTS} bursts x ${CONC}-way x 4 rounds x 600 tok) [boot: $profile] ==="
+  case "$profile" in
+    *graphs=eager*|*"MTP=0"*)
+      say "  L4 baseline scope: STRUCTURAL ONLY (stalls/errs/post-probes) — eager/MTP0 boot. The 163-sustained and 80 tok/s program baselines are GRAPHS-boot numbers, NOT comparable on this profile; scoring against them would misread eager CPU-launch cost (old-stack eager ref: 4.6-4.9 batched steps/s) as a regression. Baseline gate applies on the graphs-on boot."
+      ;;
+    *graphs=?*|*MTP=?*)
+      say "  L4 baseline scope: UNKNOWN — manifest not found; do not compare throughput to any baseline."
+      ;;
+    *)
+      say "  L4 baseline scope: FULL — profile comparable to program baselines (163-sustained graphs lane; 80 tok/s MTP1 single-stream)."
+      ;;
+  esac
   pgrep -f 'wedge-watchdog' >/dev/null 2>&1 && say "  L4: wedge-watchdog process present (runbook wants v2.5)" || warn "no wedge-watchdog process — runbook L4 requires v2.5 live; verify manually (continuing)"
   local i out errs bad sust post ed_now ed_base stalls=0 tot_errs=0 aggs="" k
   ed_base=$(elog | grep -cE 'EngineDead|TimeoutError' || true)

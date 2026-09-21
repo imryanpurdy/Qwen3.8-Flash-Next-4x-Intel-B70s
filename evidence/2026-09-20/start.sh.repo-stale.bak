@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # start.sh — Deploy kit entrypoint: Qwen3.8-Flash-Next-FP8 on 4x Intel Arc Pro
-#  /opt/venv/bin/vllm /opt/venv/bin/vllm           B70, TP4+EP4, Docker-first (vLLM XPU image + /dev/dri passthrough).
+#            B70, TP4+EP4, Docker-first (vLLM XPU image + /dev/dri passthrough).
 #
 # Single entrypoint per docs/lanes/deploy-kit-contract.md D2 (Docker-adapted;
 # the bare-metal/venv step of D1 was superseded by the 2026-09-01 Docker-first
@@ -55,9 +55,6 @@ fi
 # shellcheck source=.env
 source .env
 
-# early def: preflight disk check uses HF_CACHE_DIR (kit defined it too late)
-HF_CACHE_DIR="${HF_HOME:-$HOME/.cache/huggingface}"
-
 # ---------------------------------------------------------------------------
 # Required-var validation loop (Mia-style) + numeric sanity
 # ---------------------------------------------------------------------------
@@ -84,6 +81,8 @@ PREFLIGHT_RAM_GB="${PREFLIGHT_RAM_GB:-100}"
 PREFLIGHT_SWAP_GB="${PREFLIGHT_SWAP_GB:-64}"
 PREFLIGHT_DISK_GB="${PREFLIGHT_DISK_GB:-200}"
 PREFLIGHT_ROOT_GB="${PREFLIGHT_ROOT_GB:-40}"
+# early def (restored from proven rollback-unit start.sh): preflight disk check uses HF_CACHE_DIR; kit main def is later
+HF_CACHE_DIR="${HF_HOME:-$HOME/.cache/huggingface}"
 CONTAINER_NAME="${CONTAINER_NAME:-qwen38-flash-next}"   # derived, not in .env.sample
 SHM_SIZE="${SHM_SIZE:-16g}"                              # derived ASSUMPTION: no doc pin; see summary
 
@@ -352,9 +351,9 @@ ENV_HASH=$(env | grep -v -E '^HF_TOKEN=' | sort | sha256sum | cut -d' ' -f1 || t
 GIT_DESC=$(git -C "$SCRIPT_DIR" describe --always --dirty 2>/dev/null || echo "no-git")
 START_EPOCH=$(date -u +%s)
 if command -v python3 >/dev/null 2>&1; then
-    python3 - "$ENV_HASH" "$GIT_DESC" "$START_EPOCH" "$watchdog_enabled" <<'PYEOF' > .run/manifest.json
+    python3 - "$ENV_HASH" "$GIT_DESC" "$START_EPOCH" <<'PYEOF' > .run/manifest.json
 import json, os, sys
-env_hash, git_desc, epoch, watchdog_enabled = sys.argv[1:5]
+env_hash, git_desc, epoch = sys.argv[1:4]
 env_f = {k: v for k, v in os.environ.items() if k != 'HF_TOKEN' and not k.startswith('BASH_FUNC')}
 man = {
     "kit": "deploy-kit",
@@ -429,12 +428,10 @@ DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME")
 DOCKER_RUN+=(--device /dev/dri)
 DOCKER_RUN+=(--device-cgroup-rule 'c 226:* rwm')
 DOCKER_RUN+=(--group-add video)
-DOCKER_RUN+=(--group-add 993)
+DOCKER_RUN+=(--group-add render)
 
 # --- shared memory for the XPU multi-process stack ---
 DOCKER_RUN+=(--shm-size "$SHM_SIZE")
-# v16: allow the PLE worker to mlock its 102.4GB table + raise rlimit
-DOCKER_RUN+=(--cap-add IPC_LOCK --ulimit memlock=-1:-1)
 
 # --- mounts: host HF cache + kit .run/ state (weights persist outside the container)
 DOCKER_RUN+=(-v "$HF_CACHE_DIR:/root/.cache/huggingface")
@@ -454,7 +451,6 @@ DOCKER_RUN+=(-e "MAX_NUM_BATCHED_TOKENS=$MAX_NUM_BATCHED_TOKENS")
 DOCKER_RUN+=(-e "MAX_MODEL_LEN=$MAX_MODEL_LEN")
 DOCKER_RUN+=(-e "MAX_NUM_SEQS=$MAX_NUM_SEQS")
 DOCKER_RUN+=(-e "PLE_CPU_OFFLOAD_GB=$PLE_CPU_OFFLOAD_GB")
-DOCKER_RUN+=(-e "VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY=${VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY:-0}")
 DOCKER_RUN+=(-e "GRAPH_MODE=$GRAPH_MODE")
 if [[ -n "$HF_TOKEN" ]]; then
     DOCKER_RUN+=(-e "HF_TOKEN=$HF_TOKEN")
@@ -480,7 +476,7 @@ fi
 VLLM_ARGS+=(--max-num-seqs "$MAX_NUM_SEQS")
 VLLM_ARGS+=(--max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
 VLLM_ARGS+=(--max-model-len "$MAX_MODEL_LEN")
-# INT4 lane: --moe-backend triton removed (TRITON WNA16 rejects expert bias; oracle picks XPUExpertsWNA16)                            # Triton MoE = frozen first-load identity (lane3 §1.2)
+VLLM_ARGS+=(--moe-backend triton)                            # Triton MoE = frozen first-load identity (lane3 §1.2)
 VLLM_ARGS+=(--load-format safetensors)                       # safetensor shards (131 shards in the frozen tree)
 if [[ "$MTP_NUM_SPECULATIVE_TOKENS" -gt 0 ]]; then
     VLLM_ARGS+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_NUM_SPECULATIVE_TOKENS}")
@@ -496,34 +492,6 @@ if [[ -n "$EXTRA_VLLM_ARGS" ]]; then
     # shellcheck disable=SC2206
     VLLM_ARGS+=($EXTRA_VLLM_ARGS)
 fi
-# INT4 overnight lane (2026-09-18): XPU graph capture-replay for decode.
-# Evidence: eager CPU-launch saturation measured (4.6-4.9 batched steps/s, worker
-# main threads at 100% CPU, wchan=0). a1-a7 quarantine does NOT apply: those died
-# in Dynamo/Inductor compile BEFORE capture; FULL_DECODE_ONLY + -O 0 needs no
-# piecewise compilation (compilation.py:1485 override only hits PIECEWISE modes).
-# v24h (2026-09-19): capture EVERY decode batch size 1..MAX_NUM_SEQS.
-# An aligned decode batch at an uncaptured size falls back to EAGER on the XPU
-# full-graph path (12-way 5x cliff at MNS=12, list [1,2,4,8,16,24]; fast first
-# rounds = staggered batches still landed on captured sizes). Generating
-# through MNS makes the trap structurally impossible; the guard below refuses
-# to boot if generation ever drifts.
-if [[ -n "$CAP_SIZES_LIST" ]]; then
-  # v24h2: explicit list (e.g. "1,2,3,4,5,6,7,8,12,16") — skips transitional
-  # sizes that fault at capture time on this stack. Must still cover MNS.
-  if ! echo "$CAP_SIZES_LIST" | grep -qE "^[0-9]+(,[0-9]+)*$"; then
-    err "v24h2: CAP_SIZES_LIST must be digits+commas (got: '$CAP_SIZES_LIST')"; exit 1
-  fi
-  CAP_SIZES_JSON="[$CAP_SIZES_LIST]"
-else
-  CAP_SIZES_JSON="[$(seq -s, 1 "$MAX_NUM_SEQS")]"
-fi  # V24H2_OVERRIDE
-case "$CAP_SIZES_JSON" in
-  *",${MAX_NUM_SEQS}]"|"[${MAX_NUM_SEQS}]") : ;;
-  *) err "v24h guard: capture list '${CAP_SIZES_JSON}' does not cover MAX_NUM_SEQS=${MAX_NUM_SEQS}"; exit 1 ;;
-esac
-VLLM_ARGS+=(--compilation-config "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":${CAP_SIZES_JSON}}")
-# V24H_CAPSIZES
-
 
 info "Config summary:"
 info "  Model: $MODEL_ID  Image: $IMAGE  Container: $CONTAINER_NAME"
@@ -532,7 +500,7 @@ info "  PLE offload: ${PLE_CPU_OFFLOAD_GB} GiB/rank (~12.22 GiB pinned x 4)  Gra
 info "  Wedge watchdog: $( [[ "$watchdog_enabled" == "true" ]] && echo "ON (interval ${WEDGE_WATCHDOG_INTERVAL}s, retries ${WEDGE_WATCHDOG_RETRIES})" || echo 'OFF (double opt-out)' )"
 
 # shellcheck disable=SC2155
-"${DOCKER_RUN[@]}" "${IMAGE}" /opt/venv/bin/vllm "${VLLM_ARGS[@]}"
+"${DOCKER_RUN[@]}" "${IMAGE}" "${VLLM_ARGS[@]}"
 ok "Container started: $CONTAINER_NAME"
 
 # Tee container logs into .run/server.log for the watchdog + verification greps.
