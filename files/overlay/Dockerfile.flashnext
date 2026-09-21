@@ -132,3 +132,5 @@ RUN bash /tmp/p14-ple-offload-xpu-pinning.sh && rm /tmp/p14-ple-offload-xpu-pinn
 # must NOT impose an entrypoint (golden rule: command carries the server).
 ENTRYPOINT []
 CMD ["/bin/bash"]
+COPY p15-qsa-indexer-mindot-shapes.sh /tmp/p15-qsa-indexer-mindot-shapes.sh
+RUN bash /tmp/p15-qsa-indexer-mindot-shapes.sh && rm /tmp/p15-qsa-indexer-mindot-shapes.sh
