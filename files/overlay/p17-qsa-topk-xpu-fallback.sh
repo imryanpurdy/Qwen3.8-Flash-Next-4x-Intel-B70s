@@ -65,10 +65,15 @@ new = """    block_topk = token_topk // compress_ratio
         columns = torch.arange(width, device=logits.device)
         invalid = columns[None, :] >= visible_blocks[:, None]
         scores = logits.float().masked_fill(invalid, float("-inf"))
-        selected = torch.topk(scores, block_topk, dim=1).indices
+        # CUDA op takes width explicitly and tolerates k > width (warmup
+        # profiles). Parity: clamp k, pad tail with last-visible index.
+        rows = scores.shape[0]
+        k_eff = min(block_topk, width)
+        last_visible = (visible_blocks - 1).clamp_min(0)
+        selected = last_visible[:, None].repeat(1, block_topk)
+        selected[:, :k_eff] = torch.topk(scores, k_eff, dim=1).indices
         # Clamp over-selects (visible < block_topk, early decode) to the last
         # visible block so downstream expand never reads unwritten pages.
-        last_visible = (visible_blocks - 1).clamp_min(0)
         selected = torch.minimum(selected, last_visible[:, None].to(selected.dtype))
         block_indices.copy_(selected.to(torch.int32))
         return
