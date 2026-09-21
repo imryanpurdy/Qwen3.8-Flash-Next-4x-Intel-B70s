@@ -99,9 +99,13 @@ l2(){ # KNOWN-ANSWER: Paris + alphabet + engine alive post-probe
   local body o; body=$(complete 'The capital of France is' 12)
   printf '%s' "$body" | grep -q 'Paris' || { say "FAIL[L2]: 'Paris' absent: $(printf '%s' "$body" | head -c 200)"; return 1; }
   say "  L2: France -> Paris OK"
-  body=$(complete 'The alphabet in order: ' 12)
+  body=$(complete 'The alphabet in order: ' 40)
   o=$(printf '%s' "$body" | grep -oE '"text": *"[^"]*"' | head -1 | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')
-  printf '%s' "$o" | grep -Eq 'a[^a-z]*b[^b-z]*c' || { say "FAIL[L2]: alphabet order wrong: '$o'"; return 1; }
+  # A→Z order check, numbering-agnostic: extract ONLY alphabetic chars in
+  # sequence, require strictly increasing a<b<... across the first 8 distinct
+  # letters. Accepts "a b c d...", "1. a 2. b...", "A., B,; C" alike.
+  seq=$(printf '%s' "$o" | grep -oE '[a-z]' | uniq | head -8 | tr -d '\n')
+  printf '%s' "$seq" | grep -Eq '^abcdefgh' || { say "FAIL[L2]: alphabet order wrong: '$o' (seq=$seq)"; return 1; }
   say "  L2: alphabet ordered OK ('$o')"
   gen_probe || { say "FAIL[L2]: engine dead after known-answer"; return 1; }
   say "L2 PASS"
