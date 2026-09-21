@@ -114,6 +114,8 @@ columns = torch.arange(width)
 invalid = columns[None, :] >= visible[:, None]
 scores = logits.float().masked_fill(invalid, float("-inf"))
 selected = torch.topk(scores, block_topk, dim=1).indices
+last_visible = (visible - 1).clamp_min(0)
+selected = torch.minimum(selected, last_visible[:, None].to(selected.dtype))
 block_indices.copy_(selected.to(torch.int32))
 assert block_indices.min() >= 0 and block_indices.max() < width
 for r in range(rows):
