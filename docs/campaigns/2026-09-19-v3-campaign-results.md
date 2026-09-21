@@ -1,6 +1,6 @@
 # PLE v3 Host-Staging Campaign Results — CONFIRMED (2026-09-19)
 
-## Verdict (pre-registered rule, docs/2026-09-19-v3-campaign-prereg.md)
+## Verdict (pre-registered rule, docs/campaigns/2026-09-19-v3-campaign-prereg.md)
 **0 stalls in 15 bursts → mechanism confirmed. v3 ships as default.**
 Pre-fix baseline: 5 stalls / 7 bursts (0.71/burst). P(0 | 15, p=0.71) < 1e-7 —
 luck is excluded at any reasonable standard.
@@ -57,7 +57,7 @@ MRV2 era).
 
 ## Next (per Ryan's sequence)
 1. MTP acceptance re-check (torn reads gone → acceptance should recover;
-   prereg docs/2026-09-19-mtp-acceptance-check-prereg.md).
+   prereg docs/campaigns/2026-09-19-mtp-acceptance-check-prereg.md).
 2. KV expansion retry under patched watchdog (282,880-token allocation was
    demonstrated once; deserves a clean run).
 3. max_model_len raise to what expanded KV supports (4352 was interim).

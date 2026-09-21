@@ -64,7 +64,7 @@ not NVIDIA-only.
 
 `start.sh:123-127` still rejects any non-`eager` GRAPH_MODE: *"graphs are QUARANTINED-NEGATIVE
 (attempts a1-a7, 2026-08-28; docs/lanes/lane1 §1). Only 'eager' is deployable."* Stale since the
-2026-09-18 stage-v24c breakthrough (5-6x, 133 tok/s 8-way — docs/2026-09-18-graph-mode-breakthrough.md)
+2026-09-18 stage-v24c breakthrough (5-6x, 133 tok/s 8-way — docs/campaigns/2026-09-18-graph-mode-breakthrough.md)
 — and the very line that stalls replays captures: `replay (torch/xpu/graphs.py:108)`.
 Same pattern: launcher comment freezes an EOD verdict that later evidence inverted, and every
 operator reads the comment as current. Cross-referencing note: graphs went in via env/flags

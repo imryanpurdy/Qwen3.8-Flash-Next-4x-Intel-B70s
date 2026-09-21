@@ -3,7 +3,7 @@
 Purpose: locate every spec-decode acceptance metric vLLM can emit, its exact
 log format, and the cheapest way to get an accepted-drafts-per-step series from
 the rig's server.log for the prereg check
-(docs/2026-09-19-mtp-acceptance-check-prereg.md).
+(docs/campaigns/2026-09-19-mtp-acceptance-check-prereg.md).
 
 ## Bottom line
 
@@ -31,7 +31,7 @@ for the MRV2 (VLLM_USE_V2_MODEL_RUNNER=1) era and post-v3 alike.
 ## Rig build provenance (read before trusting any line number)
 
 - Rig version string: `0.26.1rc1.dev1250+g76cfe1cd8` (stage-v24f campaign,
-  docs/2026-09-19-connector-v3-fix-and-smoke.md).
+  docs/campaigns/2026-09-19-connector-v3-fix-and-smoke.md).
 - vllm-project/vllm has no tag `v0.26.1` (tags: `v0.26.1rc0`, `v0.26.0`,
   `v0.26.0rc1`); commit `g76cfe1cd8` returns 404 via GitHub API for
   vllm-project/vllm and intel/vllm => the wheel is a fork/dev build.

@@ -75,7 +75,7 @@ rig in every captured stall.
 ## 6. Campaign — in progress
 
 - **8/8 bursts clean so far** (pre-fix baseline: 5 stalls / 7 bursts on stage-v24d).
-- 12–15 planned per `docs/2026-09-19-v3-campaign-prereg.md` decision rule:
+- 12–15 planned per `docs/campaigns/2026-09-19-v3-campaign-prereg.md` decision rule:
   **0–1 stalls / 15 = confirmed**; 2–3 = weak evidence (+10 bursts); ≥4 = fix ineffective →
   lock diagnostic / `VLLM_PLE_CPU_OFFLOAD=1` discriminator ladder.
 - This doc's smoke is not the campaign proof: serve the count from the campaign log.

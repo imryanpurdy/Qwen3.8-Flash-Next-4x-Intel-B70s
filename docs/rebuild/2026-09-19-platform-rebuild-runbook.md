@@ -261,7 +261,7 @@ unless noted. Canonical patch scripts/sources live in `~/flashnext-scout/` (pres
 **P4/P5 rationale (write this into the evidence log):** `(num_accepted_tokens - 1).cpu()` at
 gdn_attn.py:546 and short_conv_attn.py:552 is a **blocking D2H USM memcpy through the Level
 Zero command-list manager mid-capture** — it wedged all 4 TP ranks on the MTP1 boot (boot
-4010612; `docs/2026-09-19-gdn-capture-l0-wedge.md`). The host mirror `query_start_loc_cpu`
+4010612; `docs/incidents/2026-09-19-gdn-capture-l0-wedge.md`). The host mirror `query_start_loc_cpu`
 (defined at backend.py:378) carries identical values, so `torch.diff(...) - 1` is pure host
 math: no device op, no L0 append.
 
@@ -474,12 +474,12 @@ Rules:
 
 ## 7. Evidence anchors (docs already on disk)
 
-- `docs/2026-09-19-connector-v3-fix-and-smoke.md` — v3 design, smoke gates, commit footgun, md5 gate.
-- `docs/2026-09-19-v3-campaign-prereg.md` — campaign protocol + pre-registered decision rule.
-- `docs/2026-09-19-gdn-capture-l0-wedge.md` — the boot-4010612 wedge this runbook's P4/P5 fix.
-- `docs/2026-09-19-stall-mechanism-ple-l0-contention.md` — the op-level wedge mechanism.
-- `docs/2026-09-19-wedge-census-resplit.md` + `docs/2026-09-19-ple-extinction-and-watchdog-v2.md` — watchdog v2/v2.5 semantics.
-- `docs/2026-09-19-ple-cpoffload-gate-and-campaign.md` — VLLM_PLE_CPU_OFFLOAD gate + discriminator ladder.
-- `docs/phase3-hardware-upgrade.md` — post-upgrade rig context (host RAM / disk floors).
+- `docs/campaigns/2026-09-19-connector-v3-fix-and-smoke.md` — v3 design, smoke gates, commit footgun, md5 gate.
+- `docs/campaigns/2026-09-19-v3-campaign-prereg.md` — campaign protocol + pre-registered decision rule.
+- `docs/incidents/2026-09-19-gdn-capture-l0-wedge.md` — the boot-4010612 wedge this runbook's P4/P5 fix.
+- `docs/incidents/2026-09-19-stall-mechanism-ple-l0-contention.md` — the op-level wedge mechanism.
+- `docs/incidents/2026-09-19-wedge-census-resplit.md` + `docs/campaigns/2026-09-19-ple-extinction-and-watchdog-v2.md` — watchdog v2/v2.5 semantics.
+- `docs/campaigns/2026-09-19-ple-cpoffload-gate-and-campaign.md` — VLLM_PLE_CPU_OFFLOAD gate + discriminator ladder.
+- `docs/rebuild/phase3-hardware-upgrade.md` — post-upgrade rig context (host RAM / disk floors).
 
 *End of runbook. Edit sections marked with ▢* before execution; never skip a gate.*

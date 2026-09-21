@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-20 · **Author:** subagent audit (no rig access — writing only)
 **Scope:** one question per item — *if the SSD-only reinstall (Ubuntu 24.04-HWE + OMIX 0.4, kernel 6.17.0-1010-intel, GuC 70.65) proceeds, what fails to come back, and what needs physical access?*
-**Reads:** `docs/2026-09-19-platform-rebuild-runbook.md` (+ decision/decision2 addenda), `2026-09-19-omix-target-bom.md`, `2026-09-14` migration scripts (`flashnext-scout/migrate-{B5,D,D2}.sh`, `fix-b.py`), `phase3-hardware-upgrade.md`, `firstlight-2026-09-16.md`, `2026-09-20-capture-size-cliff-and-16way.md`, session record (via task context), local repo state (`flashnext-recipe`, `flashnext-scout` — verified by git/sha).
+**Reads:** `docs/rebuild/2026-09-19-platform-rebuild-runbook.md` (+ decision/decision2 addenda), `2026-09-19-omix-target-bom.md`, `2026-09-14` migration scripts (`flashnext-scout/migrate-{B5,D,D2}.sh`, `fix-b.py`), `phase3-hardware-upgrade.md`, `firstlight-2026-09-16.md`, `2026-09-20-capture-size-cliff-and-16way.md`, session record (via task context), local repo state (`flashnext-recipe`, `flashnext-scout` — verified by git/sha).
 **Convention:** `UNVERIFIED` = no evidence in any source; must be resolved by Section 3 enumerate or by hand after first boot.
 
 ---

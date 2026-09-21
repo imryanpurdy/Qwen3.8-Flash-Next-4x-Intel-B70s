@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rebuild-verify.sh — runbook L1-L5 verification ladder as ONE gate script (docs/2026-09-19-platform-rebuild-runbook.md sec 4).
+# rebuild-verify.sh — runbook L1-L5 verification ladder as ONE gate script (docs/rebuild/2026-09-19-platform-rebuild-runbook.md sec 4).
 # Usage: ./rebuild-verify.sh (env: PORT= MODEL= MNS= CONTAINER= BURSTS=). Windows-authored: if bash errors, sed -i 's/\r$//' $0
 set -uo pipefail   # no set -e: probes/restarts handled explicitly below
 PORT=${PORT:-8021}; MODEL=${MODEL:-qwen3.8-flash-next}       # SERVED_MODEL_NAME

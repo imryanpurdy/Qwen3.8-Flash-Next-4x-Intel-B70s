@@ -88,5 +88,5 @@ table before quoting).
 ## Open items this lane inherits
 
 - Lane 4 MBT sweep (64 → 512 → 2048 → 4096) — the 77.2 s worst-case TTFT.
-- Lane 1 graphs retrial under 128 GB RAM (see `docs/phase3-hardware-upgrade.md`).
+- Lane 1 graphs retrial under 128 GB RAM (see `docs/rebuild/phase3-hardware-upgrade.md`).
 - Long-context TTFT (206 s @32K) — placement work, not this lane's blocker.

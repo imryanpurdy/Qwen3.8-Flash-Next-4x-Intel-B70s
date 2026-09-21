@@ -1,7 +1,7 @@
 # Runbook addendum 2 — vxk upgrade is part of the rebuild (2026-09-20, from vxk-gdn-capture-intel)
 
 **The rebuild now includes vllm-xpu-kernels → v0.1.14+ (full conf configs), not
-just OMIX/OS.** Source: docs/2026-09-19-vxk-gdn-capture-intel.md (committed
+just OMIX/OS.** Source: docs/incidents/2026-09-19-vxk-gdn-capture-intel.md (committed
 with this file).
 
 Why this changes the MTP1 lane:

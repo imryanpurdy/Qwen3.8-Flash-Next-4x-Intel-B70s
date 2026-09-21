@@ -4,7 +4,7 @@
 6.17.0-1010-intel kernel. GuC 70.65 + G31 IFWI 775 per the OMIX support
 matrix. NEVER GuC 70.72.1 (GSD-13481 deterministic TP2 startup hang).**
 
-Why (source-backed, docs/2026-09-19-omix-target-bom.md):
+Why (source-backed, docs/rebuild/2026-09-19-omix-target-bom.md):
 - 26.04 path ships NO kernel in the OMIX repo — it would keep jobe's
   7.0.0-31, which is the permanent-wedge kernel line in every tracker report.
 - All permanent-wedge reports are kernel 7.0 on NON-OMIX mixes; the only clean
