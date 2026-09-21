@@ -426,7 +426,11 @@ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME")
 
 # --- /dev/dri passthrough (all four render nodes) + device cgroup rules -----
-DOCKER_RUN+=(--device /dev/dri)
+# 2026-09-21: bind-mount instead of --device — docker --device copies device
+# nodes but NOT the by-path symlinks, and oneCCL (DLE 2026.1) drmfd fallback
+# opens the device directory ("opendir failed: could not open device
+# directory" after pidfd fallback, boot #9). Bind mount carries by-path.
+DOCKER_RUN+=(-v /dev/dri:/dev/dri)
 DOCKER_RUN+=(--device-cgroup-rule 'c 226:* rwm')
 DOCKER_RUN+=(--group-add video)
 DOCKER_RUN+=(--group-add 993)
