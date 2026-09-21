@@ -115,6 +115,12 @@ RUN bash /tmp/p11-triton-single-provider.sh && rm /tmp/p11-triton-single-provide
 COPY p12-connector-cuda-import-guard.sh /tmp/p12-connector-cuda-import-guard.sh
 RUN bash /tmp/p12-connector-cuda-import-guard.sh && rm /tmp/p12-connector-cuda-import-guard.sh
 
+# P13 — _validate_ple_offload_config rejects device=xpu (CUDA-only support
+# matrix postdating the old-box tree that proved PLE offload on XPU).
+# Widen the platform arm only; every other gate condition stays intact.
+COPY p13-ple-offload-xpu-gate.sh /tmp/p13-ple-offload-xpu-gate.sh
+RUN bash /tmp/p13-ple-offload-xpu-gate.sh && rm /tmp/p13-ple-offload-xpu-gate.sh
+
 # start.sh passes the full command (/opt/venv/bin/vllm serve ...) — the image
 # must NOT impose an entrypoint (golden rule: command carries the server).
 ENTRYPOINT []
