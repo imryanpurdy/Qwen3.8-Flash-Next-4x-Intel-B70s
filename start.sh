@@ -545,10 +545,11 @@ echo "$!" > .run/logtail.pid
 log_to_run "container $CONTAINER_NAME started; logtail pid $(cat .run/logtail.pid)"
 
 # ---------------------------------------------------------------------------
-# Readiness — poll OpenAI /v1/models up to 15 min (long model load: ~185 GB tree)
+# Readiness — poll OpenAI /v1/models up to 30 min (long model load: ~185 GB tree
+# + QSA warmup + triton JIT; boot #19 needed >15 min and was healthy when killed)
 # ---------------------------------------------------------------------------
-info "vLLM is loading the ~185.56 GB tree (this takes minutes). Polling /v1/models up to 15 min..."
-READY_WAIT=${READY_WAIT_SECONDS:-900}
+info "vLLM is loading the ~185.56 GB tree (this takes minutes). Polling /v1/models up to 30 min..."
+READY_WAIT=${READY_WAIT_SECONDS:-1800}
 READY_DEADLINE=$(( $(date +%s) + READY_WAIT ))
 READY=false
 while :; do
