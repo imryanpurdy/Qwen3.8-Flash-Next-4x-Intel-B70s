@@ -88,6 +88,15 @@ RUN python -c "import torch, vllm, importlib.metadata as md; assert torch.__vers
 COPY p9-qwen4exp-xpu-guard.sh /tmp/p9-qwen4exp-xpu-guard.sh
 RUN bash /tmp/p9-qwen4exp-xpu-guard.sh && rm /tmp/p9-qwen4exp-xpu-guard.sh
 
+# P10 — ple_offload_layer imports cuda.bindings unconditionally (cuda-python,
+# CUDA-only): the qwen4_exp nvidia lineage pulls is_offload_process from this
+# module at registry inspection => ModuleNotFoundError 'cuda' => boot fails.
+# On XPU the PLE sync is the connector's _d2h_event_pool, so the CUDA
+# semaphore code is dead code here; guard the import, keep runtime failure
+# loud if a CUDA path is ever reached. Idempotent, drift-failing.
+COPY p10-ple-cuda-import-guard.sh /tmp/p10-ple-cuda-import-guard.sh
+RUN bash /tmp/p10-ple-cuda-import-guard.sh && rm /tmp/p10-ple-cuda-import-guard.sh
+
 # start.sh passes the full command (/opt/venv/bin/vllm serve ...) — the image
 # must NOT impose an entrypoint (golden rule: command carries the server).
 ENTRYPOINT []
