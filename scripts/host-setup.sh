@@ -79,7 +79,7 @@ if command -v grub-editenv >/dev/null 2>&1; then
     $SUDO grub-editenv /boot/grub/grubenv set saved_entry="$KERNEL" || true
 fi
 $SUDO update-grub 2>/dev/null | tail -1 || true
-grep -q "$KERNEL" /boot/grub/grub.cfg && ok "grub: $KERNEL menu entry present" || err "grub.cfg missing $KERNEL entry"
+$SUDO grep -q "$KERNEL" /boot/grub/grub.cfg && ok "grub: $KERNEL menu entry present" || err "grub.cfg missing $KERNEL entry"
 
 # ---------------------------------------------------------------------------
 # 3. GuC 70.65 firmware (linux-firmware fb0889c0)
@@ -208,7 +208,7 @@ info "=== Read-back ==="
 echo "  intel-omix : $(dpkg-query -W -f='${Version}' intel-omix 2>/dev/null || echo ABSENT)"
 echo "  kernel pkg : $(dpkg-query -W -f='${Status}' "linux-image-$KERNEL" 2>/dev/null || echo ABSENT)"
 echo "  grub cmd   : $(grep -E '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub)"
-echo "  saved_entry: $(grub-editenv /boot/grub/grubenv list 2>/dev/null | grep saved_entry || echo unset)"
+echo "  saved_entry: $($SUDO grub-editenv /boot/grub/grubenv list 2>/dev/null | grep saved_entry || echo unset)"
 echo "  GuC sha256 : $(sha256sum "$FW" 2>/dev/null | cut -d' ' -f1 || echo ABSENT)"
 echo "  LimitNOFILE: $(systemctl show docker -p LimitNOFILE --value 2>/dev/null || echo unknown)"
 echo "  xe job t/o : $(cat /sys/class/drm/card1/device/tile0/gt0/engines/bcs/job_timeout_ms 2>/dev/null || echo unknown) ms (bcs; ccs must match)"
