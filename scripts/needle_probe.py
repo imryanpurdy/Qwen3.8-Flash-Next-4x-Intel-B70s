@@ -68,12 +68,18 @@ FILLER = (
 )
 
 
-def build_prompt(target_tokens, chars_per_token):
+def build_prompt(target_tokens, chars_per_token, salt=None):
     overhead = len(NEEDLE) + len(QUESTION) + 8
+    if salt:
+        overhead += len(salt) + 2
     chars_needed = max(1, int(target_tokens * chars_per_token) - overhead)
     n = max(2, int(math.ceil(chars_needed / float(len(FILLER)))))
     depth = int(n * 0.5)
     blocks = [FILLER] * n
+    if salt:
+        blocks.append(
+            "Session marker (unique per run, forces a full prefill; ignore "
+            "its content entirely): %s" % salt)
     blocks.insert(depth, NEEDLE)
     return "\n\n".join(blocks) + "\n\n" + QUESTION, n
 
@@ -170,6 +176,10 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=256,
                         help="output budget per request (thinking template needs "
                              "room; 32 = FINISH_REASON=length with empty reply)")
+    parser.add_argument("--salt", default=None,
+                        help="unique marker appended to the prompt; forces a "
+                             "FULL prefill (defeats the prefix cache) so "
+                             "back-to-back needles genuinely re-prefill")
     args = parser.parse_args()
 
     url = args.endpoint or ("http://localhost:%d/v1/chat/completions" % args.port)
@@ -181,7 +191,7 @@ def main():
     resp = None
     wall_s = 0.0
     for it in range(1, ITERATIONS + 1):
-        prompt, n = build_prompt(args.target_tokens, cpt)
+        prompt, n = build_prompt(args.target_tokens, cpt, salt=args.salt)
         payload = {
             "model": MODEL,
             "messages": [{"role": "user", "content": prompt}],
