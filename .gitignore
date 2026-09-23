@@ -7,3 +7,4 @@
 # Overlay artifacts are staged separately (see files/overlay/README.md)
 files/overlay/*.patch
 evidence/2026-09-20/rollback-image/*.tar.gz
+__pycache__/
