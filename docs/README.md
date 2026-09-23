@@ -48,6 +48,14 @@ The recipe repo's documentation, organized by job. The deploy-first entry point 
 | `2026-09-19-platform-rebuild-runbook-decision2.md` | Decision addendum 2: vxk upgrade is part of the rebuild |
 | `2026-09-20-rebuild-chainload-staging.md` | Chainload autoinstall staging (iso-scan fix, seed-in-initrd, storage contract) |
 | `2026-09-20-rebuild-preflight-audit.md` | Pre-wipe preflight audit (live-state corrections folded in) |
+| `2026-09-22-platform-rebuild-as-executed.md` | The rebuild AS EXECUTED: OMIX 0.4, 6.17.0-1010-intel + GuC 70.65, rollback lane, restore-to-7.0, reconciliation |
+| `2026-09-22-ple-staging-window-2s-to-120s.md` | PLE staging 2 s → 120 s (the t120 image): first-request defect, one-line fix, verification |
+| `2026-09-22-mtp1-corruption-temp0-diff.md` | MTP1 corrupts output (temp-0 A/B) — MTP0 is the validated line |
+| `2026-09-22-device-lost-130k-170k.md` | Context ceiling: 130K prefill death, 170K DEVICE_LOST; 98K is the ceiling |
+| `2026-09-22-qsa-split-k-prefill-profile.md` | QSA split-K prefill profile; why LPT=1024 |
+| `2026-09-22-neo-host-gtt-mirror-on-7.0.md` | v1 OOM ×3 on 7.0 = NEO host-GTT mirror; 6.17 is the platform of record |
+| `2026-09-23-measurement-reconciliation-soakfix-vs-bench-harness.md` | soakfix vs bench_harness: same formula, prompt shape is the gap; platform exonerated |
+| `2026-09-23-platform-restore-staging.md` | 6.17 + GuC 70.65 + iommu=off restore (staged green; reboot = acceptance step 1) |
 
 ## `incidents/`
 

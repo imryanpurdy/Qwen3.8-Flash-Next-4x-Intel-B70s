@@ -365,7 +365,7 @@ DOCKER_RUN+=(-e "PLE_CPU_OFFLOAD_GB=$PLE_CPU_OFFLOAD_GB")
 DOCKER_RUN+=(-e "VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY=${VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY:-0}")
 # Anti-envs — these must NEVER come on for this recipe:
 DOCKER_RUN+=(-e "SYCL_CACHE_PERSISTENT=0")            # =1 poisons the B70 cache -> SEGV next boot
-DOCKER_RUN+=(-e "VLLM_PLE_CPU_OFFLOAD=0")             # NVIDIA-only worker path; XPU uses UVA
+DOCKER_RUN+=(-e "VLLM_PLE_CPU_OFFLOAD=0")             # default; v1 EXTRA_DOCKER_ARGS re-sets =1 (last -e wins) = PLE worker staging path
 DOCKER_RUN+=(-e "VLLM_XPU_PLE_UVA_PREFETCH=0")        # async UVA prefetch rejected (A26/A27)
 DOCKER_RUN+=(-e "VLLM_XPU_QWEN4_EXP_HC_GROUPED_UP=0") # grouped-HC negative (A30)
 if [[ -n "${HF_TOKEN:-}" ]]; then DOCKER_RUN+=(-e "HF_TOKEN=$HF_TOKEN"); fi
