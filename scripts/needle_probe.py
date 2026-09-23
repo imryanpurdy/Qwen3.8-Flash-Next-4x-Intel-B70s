@@ -77,9 +77,11 @@ def build_prompt(target_tokens, chars_per_token, salt=None):
     depth = int(n * 0.5)
     blocks = [FILLER] * n
     if salt:
-        blocks.append(
-            "Session marker (unique per run, forces a full prefill; ignore "
-            "its content entirely): %s" % salt)
+        # PREPEND: a differing FIRST block breaks vLLM's block-hash chain at
+        # the root and forces a full prefill. (Appending left 99.9% of the
+        # prompt identical — the prefix cache absorbed it: TTFT 4 s vs 289 s.)
+        blocks.insert(0, "Session marker (unique per run; ignore its content "
+                         "entirely): %s" % salt)
     blocks.insert(depth, NEEDLE)
     return "\n\n".join(blocks) + "\n\n" + QUESTION, n
 
