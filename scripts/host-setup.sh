@@ -134,6 +134,74 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5. xe GuC job timeout — DEVICE_LOST mitigation (2026-09-23)
+# ---------------------------------------------------------------------------
+# 98K-class prefill workloads can hold a GuC job longer than the default
+# 5000 ms on the batch-copy (bcs) and compute (ccs) engines; the resulting
+# engine reset is the DEVICE_LOST (error-20) crash seen during long-context
+# needles. The driver hard-caps this knob at 10000 ms (writes above fail with
+# EINVAL), so the shippable maximum is 10000 — 2x the default.
+JOB_TIMEOUT_SCRIPT=/usr/local/sbin/set-xe-job-timeout.sh
+JOB_TIMEOUT_UNIT=/etc/systemd/system/xe-job-timeout.service
+cur=$(cat /sys/class/drm/card1/device/tile0/gt0/engines/bcs/job_timeout_ms 2>/dev/null || echo 0)
+if [[ "$cur" == "10000" && -x "$JOB_TIMEOUT_SCRIPT" && -f "$JOB_TIMEOUT_UNIT" ]]; then
+    ok "xe job timeout already installed (current: $cur ms)"
+else
+    info "Installing xe job-timeout raise (bcs+ccs -> 10000 ms)"
+    $SUDO tee "$JOB_TIMEOUT_SCRIPT" >/dev/null <<'JTSCRIPT'
+#!/bin/bash
+# Raise xe GuC job timeout on bcs+ccs engines of every GPU card.
+# Driver hard cap = 10000 ms (writes above fail with EINVAL). Default = 5000.
+TARGET=10000
+for i in $(seq 1 60); do
+  FOUND=0
+  for c in /sys/class/drm/card*; do
+    [ -d "$c/device/tile0" ] || continue
+    for g in "$c"/device/tile0/gt*/; do
+      for e in bcs ccs; do
+        f="$g/engines/$e/job_timeout_ms"
+        [ -e "$f" ] && FOUND=$((FOUND+1)) && { cur=$(cat "$f" 2>/dev/null); [ "$cur" != "$TARGET" ] && echo "$TARGET" > "$f" 2>/dev/null; }
+      done
+    done
+  done
+  [ "$FOUND" -ge 8 ] && break
+  sleep 1
+done
+echo "xe-job-timeout: wrote $TARGET ms to $FOUND engine files (bcs+ccs, all cards)"
+JTSCRIPT
+    $SUDO chmod +x "$JOB_TIMEOUT_SCRIPT"
+    $SUDO tee "$JOB_TIMEOUT_UNIT" >/dev/null <<'JTUNIT'
+[Unit]
+Description=Raise xe GuC job timeout to 10000ms on BCS/CCS engines of all GPU cards (B70 DEVICE_LOST mitigation; driver cap 10000, default 5000)
+After=systemd-modules-load.service multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/set-xe-job-timeout.sh
+
+[Install]
+WantedBy=multi-user.target
+JTUNIT
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now xe-job-timeout.service >/dev/null 2>&1
+fi
+sleep 2
+bad=0; found=0
+for c in /sys/class/drm/card*; do
+    [ -d "$c/device/tile0" ] || continue
+    for e in bcs ccs; do
+        f="$c/device/tile0/gt0/engines/$e/job_timeout_ms"
+        [ -r "$f" ] || continue
+        found=$((found+1))
+        [[ "$(cat "$f")" == "10000" ]] || bad=$((bad+1))
+    done
+done
+[[ "$found" -ge 8 ]] || err "xe job_timeout_ms nodes not found (xe driver not bound?)"
+[[ "$bad" -eq 0 ]] || err "$bad of $found bcs/ccs engines NOT at 10000 ms"
+ok "xe job timeout: 10000 ms on all bcs/ccs engines ($found files, systemd unit active)"
+
+# ---------------------------------------------------------------------------
 # Read-back summary
 # ---------------------------------------------------------------------------
 info "=== Read-back ==="
@@ -143,6 +211,7 @@ echo "  grub cmd   : $(grep -E '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub)
 echo "  saved_entry: $(grub-editenv /boot/grub/grubenv list 2>/dev/null | grep saved_entry || echo unset)"
 echo "  GuC sha256 : $(sha256sum "$FW" 2>/dev/null | cut -d' ' -f1 || echo ABSENT)"
 echo "  LimitNOFILE: $(systemctl show docker -p LimitNOFILE --value 2>/dev/null || echo unknown)"
+echo "  xe job t/o : $(cat /sys/class/drm/card1/device/tile0/gt0/engines/bcs/job_timeout_ms 2>/dev/null || echo unknown) ms (bcs; ccs must match)"
 echo "  running    : $(uname -r)  (target: $KERNEL)"
 
 if [[ "$REBOOT_NEEDED" -eq 1 || "$(uname -r)" != "$KERNEL" ]]; then

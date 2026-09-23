@@ -69,9 +69,10 @@ All in `.env.example`, each commented there. The ones that bite:
 - **98K context ceiling** — 130K dies mid-prefill, 170K DEVICE_LOST (error-20) at PLE staging; timing-based, not position/overflow (ledger CEILING-CORRECTIONS). Detail: `docs/rebuild/2026-09-22-device-lost-130k-170k.md`.
 - **MTP1 unusable on this image** — temp-0 A/B: MTP1-miss / MTP0-clean (`docs/rebuild/2026-09-22-mtp1-corruption-temp0-diff.md`).
 - **Xe2 Level-Zero wedge** every 2–6 h under load — watchdog captures py-spy + logs, restarts ≤3×; in-flight requests lost on restart.
+- **Watchdog restart after DEVICE_LOST can hang on worker attach** (engine log frozen at CCL init, no shards load, API down) — observed 2026-09-23 after a DEVICE_LOST during 98K-class needles. The watchdog's retry loop will not clear it. **Recovery = full host reboot** (sticky driver state clears). This reboot is deliberately NOT automated — restarting the host is an operator call (Ryan/Alex).
 - **Kernel 7.0.0-31 (HWE)**: serves fine and matches sustained numbers, but 98K KV is not reachable there (v1 OOM ×3 — NEO host-GTT mirror; `docs/rebuild/2026-09-22-neo-host-gtt-mirror-on-7.0.md`). Platform of record is 6.17.
 - **CCL flag** must stay (`EXTRA_DOCKER_ARGS`) — removal risks the oneCCL #212 permanent allreduce hang.
-- **Private GHCR package** — `docker login ghcr.io` before first pull.
+- **Private GHCR package** — `docker login ghcr.io` before first pull. OPEN ITEM (2026-09-23): the authenticated fresh-host pull is UNTESTED while the package stays private; the acceptance box had the image local, so no pull path was exercised. Test on a clean host when package visibility is revisited.
 
 ## Troubleshooting
 
