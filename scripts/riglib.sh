@@ -10,12 +10,13 @@
 #   ("0\n0" -> arithmetic error). Here: capture without ||, default empty->0.
 #   With offset: counts only bytes AFTER that offset (log fired at offset O ->
 #   stale text from prior boots is invisible, permanently).
+#   -E so alternation patterns work (census uses "a|b|c").
 rcount() {
   local pat="$1" file="$2" off="${3:-0}" n
   if [ "$off" -gt 0 ] && [ -s "$file" ]; then
-    n=$(tail -c +"$((off + 1))" "$file" 2>/dev/null | grep -ac "$pat")
+    n=$(tail -c +"$((off + 1))" "$file" 2>/dev/null | grep -acE "$pat")
   else
-    n=$(grep -ac "$pat" "$file" 2>/dev/null)
+    n=$(grep -acE "$pat" "$file" 2>/dev/null)
   fi
   [ -z "$n" ] && n=0
   echo "$n"
@@ -80,4 +81,32 @@ poll_verdict() {
     [ "$(date +%s)" -gt "$dl" ] && { echo TIMEOUT; return 0; }
     sleep 30
   done
+}
+
+# --- 5) census: THE fixed three-pattern reset census (directive 2026-09-23) --
+# census [logfile] [offset_bytes]
+#   No args: counts in the CURRENT BOOT's kernel ring (sudo -n dmesg).
+#   With logfile(+offset): counts in that file after offset (server-side
+#   evidence; pairs with logmark).
+#   Patterns (fixed, by directive): Engine reset | guc_exec_queue_timedout_job
+#   | DEVICE_LOST — a DEVICE_LOST-only census missed the actual GuC reset
+#   storm (2026-09-23, needle B @ MML 98304). Inline grep versions of this
+#   census FAILED THREE TIMES on shell quoting through SSH; this function is
+#   the only census now. Prints a bare integer; prints CENSUS_UNKNOWN (rc 3)
+#   when dmesg is unavailable — never a silent 0.
+census() {
+  local pat="Engine reset|guc_exec_queue_timedout_job|DEVICE_LOST"
+  local log="${1:-}" off="${2:-0}" n
+  if [ -n "$log" ]; then
+    rcount "$pat" "$log" "$off"
+    return 0
+  fi
+  if ! sudo -n dmesg >/dev/null 2>&1; then
+    echo CENSUS_UNKNOWN
+    return 3
+  fi
+  n=$(sudo -n dmesg 2>/dev/null | grep -acE "$pat")
+  [ -z "$n" ] && n=0
+  echo "$n"
+  return 0
 }
