@@ -20,21 +20,22 @@ Serving kit for **Qwen3.8-Flash-Next INT4 (W4A16-AutoRound)** on **4x Intel Arc 
 
 ## Measured numbers
 
-Every row names its harness, aggregate formula, and prompt shape. **Rows are not comparable across harnesses** (2026-09-23 reconciliation — `docs/rebuild/2026-09-23-measurement-reconciliation-soakfix-vs-bench-harness.md`). This table is produced by `tests/verify.sh`; on the pinned image (digest `sha256:0ca85985…66fc2`, kernel 7.0.0-31 testing platform):
+Every row names its harness, aggregate formula, and prompt shape. **Rows are not comparable across harnesses** (2026-09-23 reconciliation — `docs/rebuild/2026-09-23-measurement-reconciliation-soakfix-vs-bench-harness.md`). This table is produced by `tests/verify.sh`; acceptance run of record 2026-09-23: fresh clone `1efffe9` off GitHub, pinned image digest `sha256:0ca85985…66fc2`, kernel 6.17.0-1010-intel (iommu=off, GuC 70.65.0):
 
 | Metric | Value | Harness / formula / prompt |
 |---|---|---|
-| **16×600 sustained (PRODUCTION)** | **299.9 tok/s** (r1 294.2; r2–r4 300.7/298.7/300.3; spread 294.2–300.7) | soakfix.py · Σcompletion_tokens÷wall, sustained=mean(r2–r4) · open-ended essay prompt, runs TO the 600 cap |
-| 8×600 sustained (PRODUCTION) | see verify.sh run | soakfix.py · same formula · same prompt |
-| 16×320 short-burst (SECONDARY) | see verify.sh run | bench_harness.py burst · same formula · thank-you-note prompt, EOS-stops ~110–130 tok/stream (ramp+drain slice, NOT comparable to soakfix) |
-| Single-stream (N=20, first discarded) | see verify.sh run | inline verify.sh · ctok÷wall, median of 19 · essay request, 600 tok |
+| **16×600 sustained (PRODUCTION)** | **299.4 tok/s** (r2–r4 of record; r1 warmup 150.8; spread 150.8–306.5) | soakfix.py · Σcompletion_tokens÷wall, sustained=mean(r2–r4) · open-ended essay prompt, runs TO the 600 cap |
+| 8×600 sustained (PRODUCTION) | 175.6 tok/s | soakfix.py · same formula · same prompt |
+| 16×320 short-burst (SECONDARY) | 164.469 tok/s median (BEST 195.242 / WORST 152.157) | bench_harness.py burst · same formula · thank-you-note prompt, EOS-stops ~110–130 tok/stream (ramp+drain slice, NOT comparable to soakfix) |
+| Single-stream (N=20, first discarded) | 27.2 median (min 22.9, max 27.4) | inline verify.sh · ctok÷wall, median of 19 · essay request, 600 tok |
 | Tool calls | 5/5 well-formed (gate) | 5 sequential /v1/chat/completions, get_weather tool, temp 0 |
-| 98K needle | PASS @ 98,288 tok (CORRECT=YES, STAGING_NEW=0) (gate) | needle_probe.py, temp 0 |
-| Context ceiling | 98,304 — 130K dies mid-prefill; 170K DEVICE_LOST (error-20) | needle probes 2026-09-22 (ledger B4T-NEEDLE170/130) |
-| KV pool | 671,232 tokens; 6.83× concurrency @ 98K | server log 2026-09-22 23:04Z |
-| 98K needle prefill | ~406 tok/s (98,287 tok, 242.2 s wall) | ledger B4T-NEEDLE |
+| 98K needle | **PASS @ 97,754 engine-confirmed tokens** — CORRECT=YES (code `QRX-88-SHELDON`), FINISH_REASON=stop, STAGING_NEW=0, TTFT 262.8 s | needle_probe.py v2.1 (engine-calibrated, sizes to the tokenizer via usage.prompt_tokens), temp 0 |
+| Context ceiling | 98,304 — 130K dies mid-prefill; 170K DEVICE_LOST (error-20) | needle probes 2026-09-22 (ledger B4T-NEEDLE170/130); 98,179 also served clean on 6.17 (2026-09-23) |
+| KV pool | 671,232 tokens; 6.83× concurrency @ 98K | server log 2026-09-23 boot |
+| 98K needle prefill | ~372 tok/s (97,754 tok, 262.8 s wall) | verify.sh run of record 2026-09-23 |
+| Watchdog restart-path | PASS — wedge → watchdog relaunch via `--launch` → serving again | tests/watchdog-restart-test.sh, 2026-09-23 |
 
-Historical cross-checks (same harness, platform of record): Saturday 2026-09-20 soakfix r2–r4 = 314.5/310.4/320.1; 6.17-era pair-verbatim 16-way 210 (old short-burst convention). Tonight's 299.9 is inside the boot-to-boot band of the 320 boot (±2.1% 1σ, n≈20).
+Historical cross-checks (same harness, platform of record): Saturday 2026-09-20 soakfix r2–r4 = 314.5/310.4/320.1; tonight's 299.4 is inside the boot-to-boot band of the 320 boot (±2.1% 1σ, n≈20).
 
 ## Quick start
 
