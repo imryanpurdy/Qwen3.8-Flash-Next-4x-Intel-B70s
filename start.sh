@@ -336,6 +336,9 @@ fi
 # Launch
 # ---------------------------------------------------------------------------
 info "=== Launching vLLM ($MODEL_ID) ==="
+# Idempotent launch: a stopped/exited container from a previous run must not
+# block re-creation (fresh-clone acceptance 2026-09-23: name-conflict FATAL).
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME")
 # /dev/dri passthrough: device + by-path bind mount (oneCCL drmfd fallback opens
 # the device DIRECTORY; --device alone does not carry by-path symlinks).
