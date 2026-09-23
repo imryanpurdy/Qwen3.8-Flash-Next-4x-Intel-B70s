@@ -82,15 +82,18 @@ hr
 #    returned, content correct, staging_new == 0 (no PLE staging timeouts).
 # ---------------------------------------------------------------------------
 log "## 2. 98K needle probe"
-log "   harness: scripts/needle_probe.py (single long-context request)"
-log "   gates:   CORRECT=YES and STAGING_NEW=0 (no PLE staging timeouts)"
-NEEDLE=$(python3 scripts/needle_probe.py --port "$PORT" --log "$SCRIPT_DIR/.run/server.log" --target-tokens 98288 2>&1)
+log "   harness: scripts/needle_probe.py v2 (engine-calibrated: sizes to the"
+log "            tokenizer via usage.prompt_tokens; gate number is the ENGINE-"
+log "            confirmed token count, never the estimate)"
+log "   gates:   CORRECT=YES + SIZE_OK=YES (>=97000 engine tokens) + STAGING_NEW=0"
+NEEDLE=$(python3 scripts/needle_probe.py --port "$PORT" --log "$SCRIPT_DIR/.run/server.log" --target-tokens 97400 --min-prompt-tokens 97000 2>&1)
 echo "$NEEDLE" | tee -a "$OUT"
 N_CORRECT=$(echo "$NEEDLE"  | grep -c '^CORRECT=YES')
+N_SIZE=$(echo "$NEEDLE"     | grep -c '^SIZE_OK=YES')
 N_STAGING=$(echo "$NEEDLE"  | grep -oE '^STAGING_NEW=[0-9]+' | head -1 | cut -d= -f2)
-N_TOKENS=$(echo "$NEEDLE"   | grep -oE '^prompt_tokens=[0-9]+' | head -1 | cut -d= -f2)
-log "   tokens=$N_TOKENS staging_new=${N_STAGING:-?}"
-gate "98K needle (CORRECT=YES + STAGING_NEW=0)" "$([[ ${N_CORRECT:-0} -ge 1 && ${N_STAGING:-1} -eq 0 ]] && echo 0 || echo 1)"
+N_TOKENS=$(echo "$NEEDLE"   | grep -oE '^ENGINE_PROMPT_TOKENS=[0-9]+' | head -1 | cut -d= -f2)
+log "   engine_prompt_tokens=$N_TOKENS staging_new=${N_STAGING:-?}"
+gate "98K needle (CORRECT + SIZE>=98000 + STAGING_NEW=0)" "$([[ ${N_CORRECT:-0} -ge 1 && ${N_SIZE:-0} -ge 1 && ${N_STAGING:-1} -eq 0 ]] && echo 0 || echo 1)"
 hr
 
 # ---------------------------------------------------------------------------
