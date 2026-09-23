@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 # ============================================================================
 # check-weights.sh — Qwen3.8-Flash-Next INT4 (AutoRound W4A16) checkpoint

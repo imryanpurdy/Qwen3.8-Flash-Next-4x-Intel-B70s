@@ -13,9 +13,17 @@
 # render nodes) every WEDGE_WATCHDOG_INTERVAL (default 60 s). On wedge
 # detection it:
 #   1. captures the last 200 log lines + a timestamp to .run/wedge-<ts>.log
+#      (LANE-0 2026-09-22: plus py-spy python-frame dumps of TP workers +
+#      EngineCore BEFORE any restart — capture-first discipline)
 #   2. kills the hung process group (container group + docker rm -f)
 #   3. restarts via ./start.sh --launch (bounded retries, default 3)
 #   4. gives up LOUDLY after WEDGE_WATCHDOG_RETRIES with a red banner.
+#
+# LANE-0 (2026-09-22): liveness = GEN-PROBE. A 1-token chat completion
+# proves the executor actually advances (a wedged engine can hold
+# /v1/models up). Patience 120 s is sized for a max-length 98K chunked
+# prefill + queue + margin; with long_prefill_token_threshold=1024
+# admission stays open, so a healthy busy engine answers in seconds.
 #
 # DISABLE (double opt-out, non-negotiable): this watchdog only stands down
 # when BOTH WEDGE_WATCHDOG_DISABLE=1 (in .env) AND PREFLIGHT_SKIPPED=1
@@ -102,6 +110,18 @@ health_ok() {
     fi
 }
 
+gen_probe_ok() {
+    # LANE-0 (2026-09-22): executor liveness — 1 token must actually generate.
+    # Patience 120 s covers a max-length 98K chunked prefill + queue + margin.
+    # With admission open (long_prefill_token_threshold=1024) a healthy busy
+    # engine answers in seconds.
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS -m 60 -X POST "http://localhost:$PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"$SERVED_MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1,\"temperature\":0}" 2>/dev/null | grep -q "choices"
+    fi
+}
+
 log_size() {
     [[ -f "$SERVER_LOG" ]] && wc -c < "$SERVER_LOG" 2>/dev/null || echo 0
 }
@@ -128,6 +148,34 @@ capture_and_kill() {
         docker logs --tail 200 "$CONTAINER_NAME" 2>/dev/null || true
     } > "$wedge_log"
     red "WEDGE DETECTED ($reason). Captured -> $wedge_log"
+
+    # LANE-0 (2026-09-22): py-spy stacks BEFORE any restart (capture-first).
+    # python-frame dumps (native UNW_EBADREGs on this stack) + top-TID table.
+    {
+        echo ""
+        echo "--- py-spy python-frame dumps + top-TID table before kill ---"
+        PYSPY_BIN="$HOME/.local/bin/py-spy"
+        [[ -x "$PYSPY_BIN" ]] || PYSPY_BIN="$(command -v py-spy || true)"
+        if [[ -n "$PYSPY_BIN" && -x "$PYSPY_BIN" ]]; then
+            while read -r wpid wargs; do
+                echo "=== pid=$wpid $wargs"
+                sudo -n "$PYSPY_BIN" dump --pid "$wpid" 2>&1 | head -80 || \
+                    "$PYSPY_BIN" dump --pid "$wpid" 2>&1 | head -80
+            done < <(docker top "$CONTAINER_NAME" -eo pid,args 2>/dev/null \
+                     | grep -E "Worker_TP|EngineCore|multiprocessing\.spawn" | grep -v grep)
+            echo "--- top-TID CPU per TP worker (utime+stime, lifetime) ---"
+            for wpid in $(docker top "$CONTAINER_NAME" -eo pid,args 2>/dev/null \
+                          | grep "Worker_TP" | grep -v grep | awk '{print $1}'); do
+                echo "worker $wpid:"
+                for t in $(ls /proc/$wpid/task 2>/dev/null); do
+                    set -- $(awk '{print $14, $15}' /proc/$wpid/task/$t/stat 2>/dev/null)
+                    echo "$(( $1 + $2 )) $t"
+                done | sort -rn | head -3 | awk '{print "  tid="$2" ticks="$1}'
+            done
+        else
+            echo "py-spy absent at $HOME/.local/bin/py-spy"
+        fi
+    } >> "$wedge_log"
 
     # Kill the hung process group: container main PID group, then docker rm -f
     # (docker rm -f is graceful: SIGTERM, then SIGKILL after the stop timeout).
@@ -156,10 +204,11 @@ trap 'info "Watchdog stopped (signal). Wedge logs: .run/wedge-*.log"; exit 0' TE
 retries_used=0
 stall_count=0
 ever_running=false
+ready_once=false   # RYAN-HOLD: no stall counting until /v1/models has answered once (cold-load guard)
 last_log_size=$(log_size)
 
 info "Wedge watchdog starting: interval=${INTERVAL}s retries=${RETRIES} container=$CONTAINER_NAME (probe cadence ${INTERVAL}s)"
-ok "Watchdog live. Rig WILL be restarted (max ${RETRIES}x) if it wedges."
+ok "Watchdog live. Liveness = gen-probe (1-token completion, patience 120s). Rig WILL be restarted (max ${RETRIES}x) if it wedges. py-spy captures before any restart."
 
 while :; do
     sleep "$INTERVAL"
@@ -168,8 +217,9 @@ while :; do
         ever_running=true
     fi
 
-    # Health endpoint answers -> healthy, reset stall.
-    if health_ok; then
+    # Health + gen-probe (executor advances) -> healthy, reset stall.
+    if health_ok && gen_probe_ok; then
+        ready_once=true
         stall_count=0
         last_log_size=$(log_size)
         continue
@@ -259,8 +309,12 @@ while :; do
     fi
 
     # Stalled with the container alive and no signature yet: count, then wedge on a hang.
+    if [[ "$ready_once" != "true" ]]; then
+        warn "[$(date -u +%H:%M:%SZ)] pre-READY hold: models endpoint has not answered yet - stall NOT counted (cold-load guard)"
+        continue
+    fi
     stall_count=$((stall_count + 1))
-    warn "[$(date -u +%H:%M:%SZ)] no health + no log growth for ${stall_count}/${STALL_LIMIT} probes (dev=${dev})"
+    warn "[$(date -u +%H:%M:%SZ)] no health/gen-probe + no log growth for ${stall_count}/${STALL_LIMIT} probes (dev=${dev})"
     if [[ "$stall_count" -ge "$STALL_LIMIT" ]]; then
         if [[ "$retries_used" -ge "$RETRIES" ]]; then
             red "  =================================================================="
@@ -269,7 +323,7 @@ while :; do
             red "  =================================================================="
             exit 1
         fi
-        wedge_log=$(capture_and_kill "hung server (no health, no log growth for ${STALL_LIMIT} probes)")
+        wedge_log=$(capture_and_kill "hung server (no health/gen-probe, no log growth for ${STALL_LIMIT} probes)")
         retries_used=$((retries_used + 1))
         info "Restart attempt ${retries_used}/${RETRIES} via ./start.sh --launch ..."
         if WEDGE_WATCHDOG_ALREADY_RUNNING=1 "$SCRIPT_DIR/start.sh" --launch; then

@@ -1,0 +1,11 @@
+--- a/vllm/v1/ple_offload/connector.py
++++ b/vllm/v1/ple_offload/connector.py
+@@ -367,7 +367,7 @@
+             if (staging is not None
+                     and os.environ.get("VLLM_PLE_HOST_STAGE", "1") != "0"):
+                 slot, seq = staging
+-                deadline = _time.monotonic() + 2.0
++                deadline = _time.monotonic() + 120.0
+                 while int(self._staging_flag_np[slot]) != seq:
+                     if _time.monotonic() > deadline:
+                         logger.error(

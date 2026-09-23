@@ -19,7 +19,7 @@ The recipe repo's documentation, organized by job. The deploy-first entry point 
 
 1. [`lanes/00-shared-context.md`](lanes/00-shared-context.md) — what the box and model actually are
 2. [`lanes/deploy-kit-contract.md`](lanes/deploy-kit-contract.md) — the deploy contract the scripts implement
-3. [`rebuild/2026-09-19-omix-target-bom.md`](rebuild/2026-09-19-omix-target-bom.md) + [`rebuild/2026-09-19-platform-rebuild-runbook.md`](rebuild/2026-09-19-platform-rebuild-runbook.md) — the pending OS rebuild (blocks finalization)
+3. [`rebuild/2026-09-22-platform-rebuild-as-executed.md`](rebuild/2026-09-22-platform-rebuild-as-executed.md) — the rebuild AS EXECUTED (OMIX 0.4, kernel 6.17.0-1010-intel + GuC 70.65), then the 2026-09-22/23 validation docs (t120 staging window, MTP1 corruption, context ceiling, QSA prefill profile, NEO GTT mirror, measurement reconciliation, platform-restore staging)
 4. The campaign lane you care about, then its incidents
 
 ## `lanes/`
