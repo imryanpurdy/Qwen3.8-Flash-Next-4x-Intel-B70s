@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
 # ============================================================================
-# verify.sh — acceptance + measurement of record for the v1 production line
+# verify.sh — acceptance + measurement of record for the SIDE-LANE line
+# (their stack: vLLM devan-carlin/vllm@xpu-qwen4exp a69fba21; 2026-09-23)
 #
-#   ./tests/verify.sh            # full gate: tool-calls, 98K needle, sustained,
-#                                # short-burst (labeled secondary), single-stream
+#   ./tests/verify.sh            # full gate: tool-calls (structural), 97K
+#                                # needle, sustained, single-stream, receipt
 #
-# Metric discipline (2026-09-23 reconciliation — docs/rebuild/2026-09-23-
-# measurement-reconciliation-soakfix-vs-bench-harness.md):
-#   * EVERY number prints with its harness, aggregate formula, and prompt shape.
-#   * The PRODUCTION metric is soakfix.py r2-r4 sustained (sum of completion
-#     tokens over wall; open-ended prompt that runs to the token cap).
-#   * bench_harness.py short-burst is labeled SECONDARY: same formula, but its
-#     prompt EOS-stops near ~110-130 tokens regardless of the cap, so it
-#     measures a ramp+drain slice, not sustained decode. NEVER compare a
-#     soakfix number to a bench_harness number.
+# Metric discipline (comparability law — every number prints its harness,
+# aggregate formula, and prompt shape):
+#   * The GATE metric is sidelane-soakfix.py 16x600: agg = Σcompletion_tokens
+#     ÷ round_wall per round; open-ended prompt that runs TO the token cap;
+#     r1 discarded as warmup by the harness. Gate = MEDIAN r2..r15 computed
+#     from the JSON rounds (the harness's printed sustained_agg is the MEAN
+#     of the same window — both are reported).
 #   * Medians, not best, with spread.
 #   * Single-stream: discard the first (cold) measurement.
+#   * Tool calls compared STRUCTURALLY (name + argument JSON as objects),
+#     never by raw text (2026-09-23 comparator law).
 #
-# Gates (all must PASS): tool-call check, 98K needle, sustained threshold,
-# graph-capture lines present. Fails loudly; exit code carries the result.
+# Gates (all must PASS): tool-call structural 20/20 + multitool + nested,
+# 97K needle, sustained median within 10% of 626.3, single-stream, receipt.
+# Fails loudly; exit code carries the result.
 # ============================================================================
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 . ./.env 2>/dev/null || { echo "FATAL: .env missing (cp .env.example .env)"; exit 2; }
-PORT="${PORT:-8021}"
+PORT="${PORT:-8022}"
 BASE="http://localhost:$PORT"
 OUT="$SCRIPT_DIR/.run/verify.out"
 : > "$OUT"
@@ -39,148 +41,120 @@ gate() {  # gate <name> <ok:0|1>
 }
 
 command -v docker >/dev/null 2>&1 || { echo "docker missing"; exit 2; }
-docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME:-qwen38-flash-next}" \
+docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME:-es-lane}" \
     || { echo "FATAL: engine not running (./start.sh)"; exit 2; }
 
 log "# VERIFY RUN $(date -u +%FT%TZ)"
-log "# engine: $(docker inspect -f '{{.Config.Image}}' ${CONTAINER_NAME:-qwen38-flash-next})"
+log "# engine: $(docker inspect -f '{{.Config.Image}}' ${CONTAINER_NAME:-es-lane})"
+log "# line:   TP4+EP MML=${MAX_MODEL_LEN:-262144} MNS=${MAX_NUM_SEQS:-16} kv=fp8 (side-lane their-stack line)"
 hr
 
 # ---------------------------------------------------------------------------
-# 1. Tool-call check — 5 sequential chat calls with a tool defined; every
-#    answer must carry a well-formed tool_calls block (B3w payload).
+# 1. Tool-call check — 20 calls, STRUCTURAL compare (name + args as objects)
+#    harness: scripts/sidelane/sidelane-toolcall.py (promotion battery:
+#    20 calls incl. multi-tool pick + nested-arguments case)
 # ---------------------------------------------------------------------------
-log "## 1. Tool-call check (5 sequential, B3w payload)"
-log "   harness: raw POST /v1/chat/completions, temperature=0, max_tokens=96"
-TC_OK=0
-for i in 1 2 3 4 5; do
-    R=$(python3 - "$PORT" <<'PYT'
-import json, sys, urllib.request
-body = {"model": "qwen3.8-flash-next",
-        "messages": [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."}],
-        "tools": [{"type": "function", "function": {"name": "get_weather",
-            "description": "Get the current weather conditions for a city.",
-            "parameters": {"type": "object", "properties": {"location": {"type": "string"}},
-            "required": ["location"]}}}],
-        "tool_choice": "auto", "max_tokens": 96, "temperature": 0}
-req = urllib.request.Request("http://localhost:%s/v1/chat/completions" % sys.argv[1],
-    data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-with urllib.request.urlopen(req, timeout=180) as r:
-    o = json.loads(r.read())
-tc = o.get("choices", [{}])[0].get("message", {}).get("tool_calls")
-print("OK" if tc and tc[0].get("function", {}).get("name") == "get_weather" else "MISS")
-PYT
-) 2>/dev/null
-    [[ "$R" == "OK" ]] && TC_OK=$((TC_OK+1))
-done
-log "   result: $TC_OK/5 well-formed tool_calls"
-gate "tool-call check ($TC_OK/5)" "$([[ $TC_OK -eq 5 ]] && echo 0 || echo 1)"
+log "## 1. Tool-call check — 20 structural (incl. multi-tool + nested args)"
+log "   harness: scripts/sidelane/sidelane-toolcall.py"
+log "   compare: function name + argument JSON as OBJECTS (canonicalized),"
+log "            never raw text (comparator law 2026-09-23)"
+TC=$(python3 scripts/sidelane/sidelane-toolcall.py --port "$PORT" --count 20 2>&1)
+echo "$TC" | tee -a "$OUT"
+TC_V=$(echo "$TC"   | grep -oE 'TOOLCALL20_VERDICT=[0-9]+/[0-9]+' | head -1 | cut -d= -f2)
+TC_OK=${TC_V%%/*}; TC_TOT=${TC_V##*/}
+MT=$(echo "$TC"     | grep -oE 'MULTITOOL_VERDICT=(CORRECT_PICK|CHECK_RAW)' | head -1 | cut -d= -f2)
+NV=$(echo "$TC"     | grep -oE 'NESTED_VERDICT=(PASS|FAIL)' | head -1 | cut -d= -f2)
+gate "tool-call structural ${TC_OK:-?}/${TC_TOT:-?} + multitool(${MT:-MISS}) + nested(${NV:-MISS})" \
+     "$([[ "${TC_OK:-0}" -eq 20 && "${TC_TOT:-0}" -eq 20 && "${MT:-}" == "CORRECT_PICK" && "${NV:-}" == "PASS" ]] && echo 0 || echo 1)"
 hr
 
 # ---------------------------------------------------------------------------
-# 2. 98K needle — scripts/needle_probe.py at 98,288+ tokens; PASS = answer
-#    returned, content correct, staging_new == 0 (no PLE staging timeouts).
+# 2. 97K needle — sidelane-needle-probe.py (v2.1 wrapper over needle_probe,
+#    engine-calibrated sizing); PASS = CORRECT + SIZE_OK >= 97000 engine tokens
 # ---------------------------------------------------------------------------
-log "## 2. 98K needle probe"
-log "   harness: scripts/needle_probe.py v2 (engine-calibrated: sizes to the"
-log "            tokenizer via usage.prompt_tokens; gate number is the ENGINE-"
-log "            confirmed token count, never the estimate)"
-log "   gates:   CORRECT=YES + SIZE_OK=YES (>=97000 engine tokens) + STAGING_NEW=0"
-NEEDLE=$(python3 scripts/needle_probe.py --port "$PORT" --log "$SCRIPT_DIR/.run/server.log" --target-tokens 97400 --min-prompt-tokens 97000 2>&1)
+log "## 2. 97K needle probe"
+log "   harness: scripts/sidelane/sidelane-needle-probe.py v2.1 (engine-calibrated:"
+log "            sizes to the tokenizer via usage.prompt_tokens; gate number is the"
+log "            ENGINE-confirmed token count, never the estimate)"
+log "   gates:   CORRECT=YES + SIZE_OK=YES (>=97000 engine tokens)"
+NEEDLE=$(python3 scripts/sidelane/sidelane-needle-probe.py --port "$PORT" \
+            --target-tokens 97800 --min-prompt-tokens 97000 \
+            --salt "verify-97k-$(date -u +%s)" 2>&1)
 echo "$NEEDLE" | tee -a "$OUT"
-N_CORRECT=$(echo "$NEEDLE"  | grep -c '^CORRECT=YES')
-N_SIZE=$(echo "$NEEDLE"     | grep -c '^SIZE_OK=YES')
-N_STAGING=$(echo "$NEEDLE"  | grep -oE '^STAGING_NEW=[0-9]+' | head -1 | cut -d= -f2)
-N_TOKENS=$(echo "$NEEDLE"   | grep -oE '^ENGINE_PROMPT_TOKENS=[0-9]+' | head -1 | cut -d= -f2)
-log "   engine_prompt_tokens=$N_TOKENS staging_new=${N_STAGING:-?}"
-gate "98K needle (CORRECT + SIZE>=98000 + STAGING_NEW=0)" "$([[ ${N_CORRECT:-0} -ge 1 && ${N_SIZE:-0} -ge 1 && ${N_STAGING:-1} -eq 0 ]] && echo 0 || echo 1)"
+N_CORRECT=$(echo "$NEEDLE" | grep -c '^CORRECT=YES')
+N_SIZE=$(echo "$NEEDLE"    | grep -c '^SIZE_OK=YES')
+N_TOKENS=$(echo "$NEEDLE"  | grep -oE '^ENGINE_PROMPT_TOKENS=[0-9]+' | head -1 | cut -d= -f2)
+log "   engine_prompt_tokens=$N_TOKENS"
+gate "97K needle (CORRECT + SIZE>=97000)" "$([[ ${N_CORRECT:-0} -ge 1 && ${N_SIZE:-0} -ge 1 ]] && echo 0 || echo 1)"
 hr
 
 # ---------------------------------------------------------------------------
-# 3. PRODUCTION METRIC — soakfix.py sustained (r2-r4)
+# 3. Sustained — sidelane-soakfix.py 16x600, 15 rounds — GATE METRIC
+#    printed sustained_agg = MEAN r2..r15; GATE = MEDIAN r2..r15 (from JSON)
 # ---------------------------------------------------------------------------
-log "## 3. Sustained throughput — PRODUCTION METRIC"
-log "   harness: soakfix.py"
-log "   formula: agg = sum(completion_tokens) / round_wall; sustained = mean(r2..r4)"
+log "## 3. Sustained throughput — GATE METRIC (16x600 soakfix)"
+log "   harness: scripts/sidelane/sidelane-soakfix.py"
+log "   formula: agg = sum(completion_tokens)/round_wall per round;"
+log "            r1 warmup discarded; sustained_agg printed = MEAN r2..r15;"
+log "            GATE = MEDIAN r2..r15 (computed from JSON rounds)"
 log "   prompt:  open-ended technical-essay instruction; runs TO the token cap"
-log "   note:    r1 is warmup and is excluded by the harness itself"
-SF=$(python3 scripts/soakfix.py 16 2>&1)
-echo "$SF" | tee -a "$OUT"
+SF=$(python3 scripts/sidelane/sidelane-soakfix.py --n 16 --max-tokens 600 --rounds 15 \
+        --json-out .run/verify-soakfix16.json 2>&1)
+echo "$SF" | tail -20 | tee -a "$OUT"
 SF_SUS=$(echo "$SF" | grep -oE 'sustained_agg=[0-9.]+' | cut -d= -f2)
-SF_MIN=$(echo "$SF"  | grep -oE 'min_agg=[0-9.]+'    | cut -d= -f2)
-SF_MAX=$(echo "$SF"  | grep -oE 'max_agg=[0-9.]+'    | cut -d= -f2)
-log "   16x600 sustained: $SF_SUS tok/s (spread $SF_MIN-$SF_MAX)"
-gate "16-way sustained >= 280 (of record band 294-320)" \
-     "$(python3 -c "print(0 if float('${SF_SUS:-0}') >= 280 else 1)")"
-
-SF8=$(python3 scripts/soakfix.py 8 2>&1)
-echo "$SF8" | tee -a "$OUT"
-SF8_SUS=$(echo "$SF8" | grep -oE 'sustained_agg=[0-9.]+' | cut -d= -f2)
-log "   8x600 sustained: $SF8_SUS tok/s"
+SF_MIN=$(echo "$SF" | grep -oE 'min_agg=[0-9.]+'      | cut -d= -f2)
+SF_MAX=$(echo "$SF" | grep -oE 'max_agg=[0-9.]+'      | cut -d= -f2)
+SF_CLEAN=$(echo "$SF" | grep -oE 'clean=(YES|NO)'     | cut -d= -f2)
+SF_MED=$(python3 - <<'PYM'
+import json
+try:
+    with open(".run/verify-soakfix16.json") as fh:
+        aggs = [r["agg"] for r in json.load(fh)["rounds"]][1:]   # r2..r15
+    aggs.sort()
+    n = len(aggs)
+    print("%.1f" % (aggs[n//2] if n % 2 else (aggs[n//2-1]+aggs[n//2])/2) if n else 0)
+except Exception:
+    print(0)
+PYM
+)
+log "   16x600 sustained: median r2..r15 = $SF_MED tok/s (harness mean $SF_SUS; spread $SF_MIN-$SF_MAX)"
+gate "16x600 sustained median within 10% of 626.3 (band 563.7-688.9)" \
+     "$(python3 -c "print(0 if 563.7 <= float('${SF_MED:-0}') <= 688.9 else 1)")"
+gate "soak clean (0 errors, post-check OK)" "$([[ "${SF_CLEAN:-NO}" == "YES" ]] && echo 0 || echo 1)"
 hr
 
 # ---------------------------------------------------------------------------
-# 4. Short-burst — bench_harness.py (SECONDARY; do not compare to row 3)
+# 4. Single-stream at N=20, first measurement discarded (cold)
 # ---------------------------------------------------------------------------
-log "## 4. Short-burst — SECONDARY (different regime, see formula + prompt)"
-log "   harness: bench_harness.py burst"
-log "   formula: agg = sum(completion_tokens) / round_wall (identical formula)"
-log "   prompt:  'Write a short thank-you note of exactly three sentences'"
-log "   note:    EOS-stops near ~110-130 tok/stream -> ramp+drain slice; NOT"
-log "            comparable to row 3 (2026-09-23 reconciliation)"
-BH=$(python3 scripts/bench_harness.py burst --workers 16 --rounds 4 --max-tokens 320 2>&1)
-echo "$BH" | tee -a "$OUT"
-BH_MED=$(echo "$BH" | grep -oE 'ROUND_[0-9]+_aggregate_tokps=[0-9.]+' | cut -d= -f2 | sort -n | awk '{a[NR]=$1} END{if(NR%2)print a[(NR+1)/2]; else print (a[NR/2]+a[NR/2+1])/2}')
-log "   16x320 short-burst median: $BH_MED tok/s (secondary)"
-hr
-
-# ---------------------------------------------------------------------------
-# 5. Single-stream at N=20, first measurement discarded (cold)
-# ---------------------------------------------------------------------------
-log "## 5. Single-stream (N=20, first discarded)"
+log "## 4. Single-stream (N=20, first discarded)"
+log "   harness: scripts/sidelane/sidelane-single-stream.py"
 log "   formula: completion_tokens / wall per request; median over 19"
-SS=$(python3 - "$PORT" <<'PYS'
-import json, sys, time, urllib.request
-lat = []
-for i in range(20):
-    body = {"model": "qwen3.8-flash-next",
-            "messages": [{"role": "user", "content": "Summarize the plot of Romeo and Juliet in a few paragraphs."}],
-            "max_tokens": 600, "temperature": 0}
-    req = urllib.request.Request("http://localhost:%s/v1/chat/completions" % sys.argv[1],
-        data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    t0 = time.time()
-    with urllib.request.urlopen(req, timeout=600) as r:
-        o = json.loads(r.read())
-    wall = time.time() - t0
-    ct = o["usage"]["completion_tokens"]
-    lat.append(ct / wall)
-disc, rest = lat[0], lat[1:]
-rest.sort()
-n = len(rest)
-med = rest[n//2] if n % 2 else (rest[n//2-1]+rest[n//2])/2
-print("discarded_first=%.1f median19=%.1f min=%.1f max=%.1f" % (disc, med, rest[0], rest[-1]))
-PYS
-) 2>&1
+SS=$(python3 scripts/sidelane/sidelane-single-stream.py --port "$PORT" 2>&1)
 echo "$SS" | tee -a "$OUT"
 SS_MED=$(echo "$SS" | grep -oE 'median19=[0-9.]+' | cut -d= -f2)
 log "   single-stream median: $SS_MED tok/s"
+gate "single-stream median >= 40 (validated band 52.3-52.8)" \
+     "$(python3 -c "print(0 if float('${SS_MED:-0}') >= 40 else 1)")"
 hr
 
 # ---------------------------------------------------------------------------
-# 6. Graph-capture gate — decode graphs actually captured at boot
+# 5. Boot-receipt gate — 'Application startup complete' (the verified READY
+#    receipt of every boot of record; graphs capture inside torch.compile
+#    before it on this stack)
 # ---------------------------------------------------------------------------
-log "## 6. Graph-capture gate"
-CAPN=$(docker logs "${CONTAINER_NAME:-qwen38-flash-next}" 2>&1 | grep -c "Graph capturing finished")
-log "   'Graph capturing finished' lines: $CAPN"
-gate "graph capture present" "$([[ ${CAPN:-0} -ge 1 ]] && echo 0 || echo 1)"
+log "## 5. Boot-receipt gate"
+RCPT=$(docker logs "${CONTAINER_NAME:-es-lane}" 2>&1 | grep -c "Application startup complete")
+log "   'Application startup complete' lines: $RCPT"
+gate "startup receipt present" "$([[ ${RCPT:-0} -ge 1 ]] && echo 0 || echo 1)"
 
 # ---------------------------------------------------------------------------
 log ""
 log "# SUMMARY"
-log "  16x600 sustained (PRODUCTION): $SF_SUS tok/s (spread $SF_MIN-$SF_MAX)"
-log "   8x600 sustained (PRODUCTION): $SF8_SUS tok/s"
-log "  16x320 short-burst (secondary): $BH_MED tok/s"
-log "  single-stream median:           $SS_MED tok/s"
+log "  tool-call structural:          ${TC_OK:-?}/${TC_TOT:-?} + multitool=${MT:-MISS} + nested=${NV:-MISS}"
+log "  97K needle:                    CORRECT=${N_CORRECT:-0} SIZE_OK=${N_SIZE:-0} (engine tokens ${N_TOKENS:-?})"
+log "  16x600 sustained (GATE):       median ${SF_MED:-?} / mean ${SF_SUS:-?} tok/s (spread ${SF_MIN:-?}-${SF_MAX:-?}, clean=${SF_CLEAN:-?})"
+log "  single-stream median:          ${SS_MED:-?} tok/s"
+log "  startup receipt lines:         ${RCPT:-0}"
 log "  gates: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] && log "  VERIFY: PASS" || log "  VERIFY: FAIL"
 exit "$FAIL"
