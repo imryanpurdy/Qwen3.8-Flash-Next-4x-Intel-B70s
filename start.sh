@@ -96,7 +96,6 @@ XPU_GATE_DISABLE="${XPU_GATE_DISABLE:-0}"
 PREFLIGHT_XPU_COUNT="${PREFLIGHT_XPU_COUNT:-4}"
 PREFLIGHT_RAM_GB="${PREFLIGHT_RAM_GB:-100}"
 PREFLIGHT_SWAP_GB="${PREFLIGHT_SWAP_GB:-64}"
-PREFLIGHT_DISK_GB="${PREFLIGHT_DISK_GB:-30}"
 PREFLIGHT_ROOT_GB="${PREFLIGHT_ROOT_GB:-40}"
 READY_WAIT="${READY_WAIT_SECONDS:-900}"
 export WEDGE_WATCHDOG_INTERVAL WEDGE_WATCHDOG_RETRIES WEDGE_WATCHDOG_DISABLE \
@@ -204,12 +203,22 @@ exec_preflight() {
         err "PREFLIGHT FAIL — iommu=off not in cmdline. Set GRUB_CMDLINE_LINUX_DEFAULT=\"iommu=off\" in /etc/default/grub + update-grub, or run scripts/host-setup.sh."
     fi
 
-    local wroot_kib wroot_gib
-    wroot_kib=$(df -Pk "$(dirname "$MODEL_PATH")" 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
+    # Weights are a LOCAL tree (bind-mounted read-only): serving needs no
+    # download headroom. Free space on the weights mount is REPORT-ONLY
+    # (the rig's /data runs at 92% and that is fine for serving); the HARD
+    # gate is that the weights exist, done after preflight. 2 GiB floor is
+    # a serving-operations floor (logs/caches), not a download floor.
+    local wroot_mnt wroot_kib wroot_gib
+    wroot_mnt=$(df -Pk "$MODEL_PATH" 2>/dev/null | awk 'NR==2{print $6}')
+    wroot_kib=$(df -Pk "$MODEL_PATH" 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
     wroot_gib=$(( wroot_kib / 1048576 ))
-    [[ "$wroot_kib" -ge $(( PREFLIGHT_DISK_GB * 1048576 )) ]] \
-        || err "PREFLIGHT FAIL — weights mount has ${wroot_gib:-0} GiB free < ${PREFLIGHT_DISK_GB} GiB. (NOTE: /data ran 92% used / 18 G free on 2026-09-23 — report-only standing state.)"
-    ok "Disk (weights mount): ${wroot_gib} GiB free (floor ${PREFLIGHT_DISK_GB} GiB)"
+    if [[ "$wroot_kib" -lt $(( 2 * 1048576 )) ]]; then
+        err "PREFLIGHT FAIL — weights mount has ${wroot_gib:-0} GiB free < 2 GiB serving floor."
+    fi
+    [[ "$wroot_gib" -lt 30 ]] \
+        && warn "Disk (weights mount $wroot_mnt): ${wroot_gib} GiB free — tight but sufficient for a local-weights serve (report-only standing state; no download occurs)."
+    [[ "$wroot_gib" -ge 30 ]] \
+        && ok "Disk (weights mount $wroot_mnt): ${wroot_gib} GiB free (serving floor 2 GiB)"
 
     local root_kib root_gib
     root_kib=$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
