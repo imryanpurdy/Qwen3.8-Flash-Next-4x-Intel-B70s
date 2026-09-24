@@ -17,6 +17,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
+mkdir -p "$SCRIPT_DIR/.run/eslane"    # fresh clones have no .run/ (git drops empty dirs)
 PORT="${PORT:-8022}"
 CONTAINER_NAME="${CONTAINER_NAME:-es-lane}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen-256k}"

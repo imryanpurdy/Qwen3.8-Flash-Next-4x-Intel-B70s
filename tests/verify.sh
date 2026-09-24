@@ -30,6 +30,7 @@ cd "$SCRIPT_DIR"
 PORT="${PORT:-8022}"
 BASE="http://localhost:$PORT"
 OUT="$SCRIPT_DIR/.run/verify.out"
+mkdir -p "$SCRIPT_DIR/.run"          # fresh clones have no .run/ (git drops empty dirs)
 : > "$OUT"
 log() { echo "$*" | tee -a "$OUT"; }
 hr()  { log "----------------------------------------------------------------"; }
