@@ -83,10 +83,15 @@ case "$TENSOR_PARALLEL_SIZE" in 4) ;; *) err "TENSOR_PARALLEL_SIZE=$TENSOR_PARAL
 if [[ "$MAX_MODEL_LEN" -gt 262144 ]]; then
     err "MAX_MODEL_LEN=$MAX_MODEL_LEN exceeds the validated 262144 (their MML; 250K needle CORRECT at 262144). Above is untested — gate it first."
 fi
-#   MNS 16 = the gated operating point (soak 626.3 tok/s sustained, 0 restarts).
-#   MNS 4 measured 181.7; values above 16 untested.
-if [[ "$MAX_NUM_SEQS" -gt 16 ]]; then
-    err "MAX_NUM_SEQS=$MAX_NUM_SEQS exceeds the validated 16 (soak PASS at 16; above is untested — gate it first)."
+#   MNS 16 = soak-validated operating point (626.3 tok/s sustained, 0 restarts).
+#   MNS ladder 2026-09-24 (quiet engine, no spec decode): 2->95, 4->180, 8->335, 16->629 tok/s agg.
+#   32 = KV knee at MML 262144 (809,600/886,567 tokens at 25% long-mix).
+#   17-31 untested interim values -> WARN; 32 = gated test target; >32 hard-fails.
+if [[ "$MAX_NUM_SEQS" -gt 32 ]]; then
+    err "MAX_NUM_SEQS=$MAX_NUM_SEQS exceeds the KV-math knee of 32 at MML 262144 (gate it first)."
+fi
+if [[ "$MAX_NUM_SEQS" -gt 16 && "$MAX_NUM_SEQS" -ne 32 ]]; then
+    echo "WARN: MAX_NUM_SEQS=$MAX_NUM_SEQS is in the untested 17-31 band (validated: 16; 32 under test)." >&2
 fi
 
 WEDGE_WATCHDOG_DISABLE="${WEDGE_WATCHDOG_DISABLE:-0}"
