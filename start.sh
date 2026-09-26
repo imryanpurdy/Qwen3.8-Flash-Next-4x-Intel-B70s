@@ -102,11 +102,17 @@ if [[ -n "${SPECULATIVE_CONFIG:-}" ]]; then
     ok "Speculative decoding enabled: $SPECULATIVE_CONFIG"
 fi
 
-# Optional oneCCL Level-Zero IPC exchange mode override (sockets|drmfd|pidfd).
-# Needed when draft-head tensor exchange dies in ze_handle_manager (device_fd invalid).
+# Optional oneCCL env overrides. MUST default to UNSET (not 0): explicit
+# CCL_TOPO_P2P_ACCESS=0 forces the oneCCL fd-exchange path, which dies at
+# worker-init all_reduce on this rig (ze_handle_manager device_fd invalid);
+# absent = auto-detect (works), 1 = direct P2P (works, measured neutral).
 EXTRA_CCL_ARGS=()
+if [[ -n "${CCL_TOPO_P2P_ACCESS:-}" ]]; then
+    EXTRA_CCL_ARGS+=(-e "CCL_TOPO_P2P_ACCESS=$CCL_TOPO_P2P_ACCESS")
+    ok "oneCCL P2P access: $CCL_TOPO_P2P_ACCESS"
+fi
 if [[ -n "${CCL_ZE_IPC_EXCHANGE:-}" ]]; then
-    EXTRA_CCL_ARGS=(-e "CCL_ZE_IPC_EXCHANGE=$CCL_ZE_IPC_EXCHANGE")
+    EXTRA_CCL_ARGS+=(-e "CCL_ZE_IPC_EXCHANGE=$CCL_ZE_IPC_EXCHANGE")
     ok "oneCCL ZE IPC exchange mode: $CCL_ZE_IPC_EXCHANGE"
 fi
 
@@ -375,7 +381,6 @@ docker run -d --name "$CONTAINER_NAME" \
   -e TRANSFORMERS_OFFLINE=1 \
   -e UR_L0_SYNC_MODE="${UR_L0_SYNC_MODE:-BLOCKING}" \
   -e VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}" \
-  -e CCL_TOPO_P2P_ACCESS="${CCL_TOPO_P2P_ACCESS:-0}" \
   "${EXTRA_CCL_ARGS[@]}" \
   -e VLLM_XPU_ENABLE_XPU_GRAPH="${VLLM_XPU_ENABLE_XPU_GRAPH:-1}" \
   -e MAX_JOBS="${MAX_JOBS:-16}" \
