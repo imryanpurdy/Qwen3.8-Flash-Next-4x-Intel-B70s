@@ -94,6 +94,14 @@ if [[ "$MAX_NUM_SEQS" -gt 16 && "$MAX_NUM_SEQS" -ne 32 ]]; then
     echo "WARN: MAX_NUM_SEQS=$MAX_NUM_SEQS is in the untested 17-31 band (validated: 16; 32 under test)." >&2
 fi
 
+# Optional speculative decoding (MTP draft head). Default OFF = boots of record unchanged.
+# Set SPECULATIVE_CONFIG in .env, e.g. {"method":"mtp","num_speculative_tokens":1}
+SPEC_ARGS=()
+if [[ -n "${SPECULATIVE_CONFIG:-}" ]]; then
+    SPEC_ARGS=(--speculative-config "$SPECULATIVE_CONFIG")
+    ok "Speculative decoding enabled: $SPECULATIVE_CONFIG"
+fi
+
 WEDGE_WATCHDOG_DISABLE="${WEDGE_WATCHDOG_DISABLE:-0}"
 WEDGE_WATCHDOG_INTERVAL="${WEDGE_WATCHDOG_INTERVAL:-60}"
 WEDGE_WATCHDOG_RETRIES="${WEDGE_WATCHDOG_RETRIES:-3}"
@@ -379,7 +387,8 @@ docker run -d --name "$CONTAINER_NAME" \
   --enable-auto-tool-choice \
   --tool-call-parser "$TOOL_CALL_PARSER" \
   --generation-config "$GENERATION_CONFIG" \
-  --override-generation-config "$OVERRIDE_GENERATION_CONFIG"
+  --override-generation-config "$OVERRIDE_GENERATION_CONFIG" \
+  "${SPEC_ARGS[@]}"
 ok "Container started: $CONTAINER_NAME"
 log_to_run "container up (boot $(date -u +%FT%TZ))"
 
