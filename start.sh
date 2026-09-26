@@ -102,6 +102,14 @@ if [[ -n "${SPECULATIVE_CONFIG:-}" ]]; then
     ok "Speculative decoding enabled: $SPECULATIVE_CONFIG"
 fi
 
+# Optional oneCCL Level-Zero IPC exchange mode override (sockets|drmfd|pidfd).
+# Needed when draft-head tensor exchange dies in ze_handle_manager (device_fd invalid).
+EXTRA_CCL_ARGS=()
+if [[ -n "${CCL_ZE_IPC_EXCHANGE:-}" ]]; then
+    EXTRA_CCL_ARGS=(-e "CCL_ZE_IPC_EXCHANGE=$CCL_ZE_IPC_EXCHANGE")
+    ok "oneCCL ZE IPC exchange mode: $CCL_ZE_IPC_EXCHANGE"
+fi
+
 WEDGE_WATCHDOG_DISABLE="${WEDGE_WATCHDOG_DISABLE:-0}"
 WEDGE_WATCHDOG_INTERVAL="${WEDGE_WATCHDOG_INTERVAL:-60}"
 WEDGE_WATCHDOG_RETRIES="${WEDGE_WATCHDOG_RETRIES:-3}"
@@ -368,6 +376,7 @@ docker run -d --name "$CONTAINER_NAME" \
   -e UR_L0_SYNC_MODE="${UR_L0_SYNC_MODE:-BLOCKING}" \
   -e VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}" \
   -e CCL_TOPO_P2P_ACCESS="${CCL_TOPO_P2P_ACCESS:-0}" \
+  "${EXTRA_CCL_ARGS[@]}" \
   -e VLLM_XPU_ENABLE_XPU_GRAPH="${VLLM_XPU_ENABLE_XPU_GRAPH:-1}" \
   -e MAX_JOBS="${MAX_JOBS:-16}" \
   $IMAGE \
