@@ -1,0 +1,7 @@
+# Local secrets — never commit
+.env
+
+# Runtime state (watchdog pids, server logs, wedge captures, manifest, receipts)
+.run/
+
+__pycache__/

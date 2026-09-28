@@ -1,0 +1,20 @@
+diff --git a/vllm/v1/spec_decode/llm_base_proposer.py b/vllm/v1/spec_decode/llm_base_proposer.py
+index 33a403a..0072c21 100644
+--- a/vllm/v1/spec_decode/llm_base_proposer.py
++++ b/vllm/v1/spec_decode/llm_base_proposer.py
+@@ -1401,9 +1401,12 @@ class SpecDecodeBaseProposer:
+                     target_model.config.media_placeholder_token_id
+                 )
+             else:
+-                self.model.config.image_token_index = (
+-                    target_model.config.image_token_index
+-                )
++                # MTP patch 1: text-only targets (Qwen4Exp) carry
++                # image_token_id, not the llava-era image_token_index.
++                _img_tok = getattr(target_model.config, "image_token_index", None)
++                if _img_tok is None:
++                    _img_tok = getattr(target_model.config, "image_token_id", None)
++                self.model.config.image_token_index = _img_tok
+             target_language_model = cast(
+                 SupportsMultiModal, target_model
+             ).get_language_model()

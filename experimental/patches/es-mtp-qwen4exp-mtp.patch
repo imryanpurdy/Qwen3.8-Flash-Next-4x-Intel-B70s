@@ -1,0 +1,36 @@
+diff --git a/vllm/model_executor/models/qwen4_exp.py b/vllm/model_executor/models/qwen4_exp.py
+index 1b280fe..a398e2e 100644
+--- a/vllm/model_executor/models/qwen4_exp.py
++++ b/vllm/model_executor/models/qwen4_exp.py
+@@ -836,8 +836,14 @@ class Qwen4ExpModel(Qwen3NextModel):
+         # Allocate a buffer when speculative decoding (MTP) is enabled so the
+         # drafter can read the pre-mixer residual after each target step.
+         spec_config = vllm_config.speculative_config
++        # MTP patch 2: the resolved method for qwen4_exp_mtp is "mtp",
++        # which satisfies neither use_eagle() nor uses_draft_model() in this
++        # fork — the wide-residual buffer stayed None and the drafter crashed
++        # on [2,2560] vs [2,10240]. Recognize the mtp methods explicitly.
+         needs_mtp_hidden = spec_config is not None and (
+-            spec_config.use_eagle() or spec_config.uses_draft_model()
++            spec_config.use_eagle()
++            or spec_config.uses_draft_model()
++            or getattr(spec_config, "method", None) in ("mtp", "qwen4_exp_mtp")
+         )
+         if get_pp_group().is_last_rank and needs_mtp_hidden:
+             self._mtp_hidden_buffer = torch.empty(
+@@ -1348,6 +1354,15 @@ class Qwen4ExpForConditionalGeneration(
+         # Set MoE hyperparameters (expert parallelism / EPLB).
+         self.set_moe_parameters()
+ 
++    # MTP patch 3: delegate the MTP wide-residual hook to the text model.
++    # The checkpoint loads as Qwen4ExpForConditionalGeneration (multimodal
++    # wrapper); the runner's getattr(model, "get_mtp_target_hidden_states")
++    # must find the hook on THIS wrapper - the fork only defined it on
++    # Qwen4ExpForCausalLM, so the lookup returned None and the drafter got the
++    # narrow [T, n_embd] stream (attempts 8/9: 2560 vs 10240 crash).
++    def get_mtp_target_hidden_states(self) -> torch.Tensor | None:
++        return self.language_model.get_mtp_target_hidden_states()
++
+     def forward(
+         self,
+         input_ids: torch.Tensor | None,
