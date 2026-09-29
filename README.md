@@ -6,7 +6,7 @@ Serving kit for **Qwen3.8-Flash-Next W4A16** on **4x Intel Arc Pro B70 32GB, TP4
 
 ## What it is
 
-Everything needed to reproduce the measured stack on a clean Ubuntu .md 24.04 host with 4x B70:
+Everything needed to reproduce the measured stack on a clean Ubuntu 24.04 host with 4x B70:
 
 - `scripts/host-setup.sh` — one-time host provisioning (driver stack, kernel, firmware, Docker limits)
 - `docker/Dockerfile` — the serving image (vLLM fork + pinned toolchain; build fixes baked in)
@@ -15,6 +15,15 @@ Everything needed to reproduce the measured stack on a clean Ubuntu .md 24.04 ho
 - `scripts/` — measurement harnesses (`soakfix.py`, `single-stream.py`, `needle-probe.py`, `toolcall.py`) and the wedge watchdog
 - `tests/verify.sh` — the acceptance gate that produced the numbers below
 - `docs/notes/` — the measured-results record and the two design verdicts (dense-variant fidelity, Level-Zero wedge mechanism)
+
+## Prerequisites
+
+`scripts/host-setup.sh` installs packages from two sources that are not enabled on a stock Ubuntu 24.04 install. Enable both first:
+
+- **Intel's GPU software repository** (provides `intel-omix` 0.4 and the Level Zero userspace): follow Intel's client GPU installation guide at <https://dgpu-docs.intel.com>.
+- **The package source for kernel `6.17.0-1010-intel`** (Intel's Ubuntu kernel packages). The script stops with a clear error if it can't find the package.
+
+Also required: Docker Engine, with your user in the `docker` and `render` groups.
 
 ## Hardware
 
@@ -52,12 +61,17 @@ cd Qwen3.8-Flash-Next-4x-Intel-B70s
 # 1. Host platform (CHANGES THE HOST — see warning below; REBOOT required)
 sudo ./scripts/host-setup.sh
 
-# 2. Weights (~180 GB; one snapshot_download fetches shards + PLE table)
+# 2. Weights (~180 GB: shards + PLE table) into a plain directory
+#    (--local-dir gives real files; a Hugging Face cache snapshot is symlinks,
+#     which break inside the container mount)
 python3 -m pip install -U huggingface_hub
-python3 -c "from huggingface_hub import snapshot_download; print(snapshot_download('devan-carlin/Qwen3.8-Flash-Next-W4A16', revision='40b8f18df4d4a32cb6e687a51c78207e5e438522', max_workers=8))"
+hf download devan-carlin/Qwen3.8-Flash-Next-W4A16 \
+    --revision 40b8f18df4d4a32cb6e687a51c78207e5e438522 \
+    --local-dir /data/Qwen3.8-Flash-Next-W4A16
 
 # 3. Config + image
-cp .env.example .env                 # edit MODEL_PATH to the snapshot dir printed above
+cp .env.example .env                 # set MODEL_PATH and PLE_TABLE_PATH to the directory above
+./check-weights.sh                   # presence + family + size of the downloaded tree
 docker build -t qwen38-flash-next:local docker/
 
 # 4. Launch (preflight → weights gate → XPU gate → engine → ready-poll → watchdog)
@@ -75,11 +89,11 @@ docker build -t qwen38-flash-next:local docker/
 
 | What | Where |
 |---|---|
-| Checkpoint (17 shards, ~77 GB) + `ple_table_qwen4exp.pt` (~102 GB) | [`devan-carlin/Qwen3.8-Flash-Next-W4A16`](https://huggingface.co/devan-carlin/Qwen3.8-Flash-Next-W4A16) @ rev **`40b8f18df4d4a32cb6e687a51c78207e5e438522`** — one `snapshot_download` fetches both; command in Quick start |
-| Identity gate | `check-weights.sh` — HF-cache layout proves the rev offline (snapshot dir name = pinned rev); direct-tree mode checks presence + family + size |
+| Checkpoint (17 shards, ~77 GB) + `ple_table_qwen4exp.pt` (~102 GB) | [`devan-carlin/Qwen3.8-Flash-Next-W4A16`](https://huggingface.co/devan-carlin/Qwen3.8-Flash-Next-W4A16) @ rev **`40b8f18df4d4a32cb6e687a51c78207e5e438522`** — one `hf download --local-dir` fetches both; command in Quick start |
+| Identity gate | `check-weights.sh` — checks presence, model family and size of the downloaded tree (the pinned revision is in your download command) |
 | Model license | **Qwen Community License 1.0** (see License below) |
 
-The `ple_table_qwen4exp.pt` PLE table is part of the same pinned revision — no separate source or generation step.
+The `ple_table_qwen4exp.pt` PLE table is part of the same pinned revision — no separate source or generation step. It must stay inside `MODEL_PATH`; the container reads it from there.
 
 ## Configuration
 
@@ -93,9 +107,10 @@ All knobs live in `.env` (`cp .env.example .env`), each annotated there. The one
 
 ## Known limits
 
-- **2–6 h Level-Zero wedge under sustained load** — Xe2 driver-level wedge (`ccs`/`bcs` engine reset signatures); only a container restart recovers; in-flight requests are lost. The watchdog detects and restarts automatically. Mechanism + captures: [`docs/notes/gdn-l0-wedge.md`](docs/notes/gdn-l0-wedge.md). Mitigation baked into `scripts/host-setup.sh`: xe GuC job timeout raised to 10000 ms (driver cap; default 5000).
-- **Dense-attention model variant** — this is the dense-full-context QSA checkpoint, not the sparse-QSA production variant; short-row behavioral diffs are real and characterized (2 code-path diffs); long-context fidelity agrees. See the note above.
+- **2–6 h Level-Zero wedge under sustained load** — Xe2 driver-level wedge (`ccs`/`bcs` engine reset signatures); only a container restart recovers; in-flight requests are lost. The watchdog detects and restarts automatically. One precisely localized instance (a graph-capture hang with speculative decoding on) is documented in [`docs/notes/gdn-l0-wedge.md`](docs/notes/gdn-l0-wedge.md); the load-time wedge itself is recovered by the watchdog, not root-caused. Mitigation baked into `scripts/host-setup.sh`: xe GuC job timeout raised to 10000 ms (driver cap; default 5000).
+- **Dense-attention model variant** — this is the dense-full-context QSA checkpoint, not the sparse-QSA variant; short-row behavioral diffs are real and characterized (2 code-path diffs); long-context fidelity agrees. See the note above.
 - **Above 262144 context is untested** — `start.sh` hard-fails; the 250,700-token needle passes at the ceiling.
+- **No authentication** — the API listens on all interfaces at `PORT` with no key. Bind it to localhost, put it behind an authenticating proxy, or add vLLM's `--api-key`.
 - **`MAX_NUM_SEQS` > 32 hard-fails** (KV-cache math knee at MML 262144); 17–31 warn as untested.
 
 ## Troubleshooting
@@ -112,9 +127,8 @@ All knobs live in `.env` (`cp .env.example .env`), each annotated there. The one
 - **devan-carlin** — the vLLM fork [`xpu-qwen4exp`](https://github.com/devan-carlin/vllm) and the W4A16 weights ([HF repo](https://huggingface.co/devan-carlin/Qwen3.8-Flash-Next-W4A16))
 - **Intel** — the [`omix`](https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html) base image and the XPU software stack
 - **Qwen** — the [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) model, under the [Qwen Community License 1.0](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE)
-- **steveseguin** — prior B70 optimization work referenced by the runtime stage build
 
 ## License
 
 This repo's kit (scripts, Dockerfile, docs): MIT — see [LICENSE](LICENSE).
-The model weights are governed by the **Qwen Community License 1.0** (terms in the HF repo and in the downloaded snapshot): free to use including commercially, with attribution conditions above 100M MAU / $20M monthly revenue.
+The model weights are governed by the **[Qwen Community License 1.0](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE)**; read it before use.

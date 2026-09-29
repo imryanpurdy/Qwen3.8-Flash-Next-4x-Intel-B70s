@@ -129,7 +129,10 @@ READY_WAIT="${READY_WAIT_SECONDS:-900}"
 export WEDGE_WATCHDOG_INTERVAL WEDGE_WATCHDOG_RETRIES WEDGE_WATCHDOG_DISABLE \
        CONTAINER_NAME PORT SERVED_MODEL_NAME PREFLIGHT_XPU_COUNT
 
-trap 'rc=$?; if [[ "$rc" -ne 0 && "$CMD" != "stop" && -f .run/watchdog.pid ]]; then kill "$(cat .run/watchdog.pid)" 2>/dev/null || true; fi; exit "$rc"' EXIT
+# When the watchdog itself calls us (restart path), it sets WEDGE_WATCHDOG_ALREADY_RUNNING=1:
+# never kill or respawn the calling watchdog, or its bounded-retry counter resets.
+WD_CALLER="${WEDGE_WATCHDOG_ALREADY_RUNNING:-0}"
+trap 'rc=$?; if [[ "$rc" -ne 0 && "$CMD" != "stop" && "$WD_CALLER" != "1" && -f .run/watchdog.pid ]]; then kill "$(cat .run/watchdog.pid)" 2>/dev/null || true; fi; exit "$rc"' EXIT
 
 running() { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
 
@@ -178,7 +181,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # PREFLIGHT — XPU count, RAM, swap, kernel, GuC hash, iommu=off
-# (identical floors to the v1 kit; scripts/host-setup.sh)
+# (floors provisioned by scripts/host-setup.sh)
 # ---------------------------------------------------------------------------
 GUC_SHA_EXPECT="70d74627e395347ea04c37168d92f01c9e940f4b32e0743b6350ca808fdb67bb"
 GUC_FW="/lib/firmware/xe/bmg_guc_70.bin"
@@ -272,30 +275,13 @@ fi
 local_shards=$(ls "$MODEL_PATH"/*.safetensors 2>/dev/null | wc -l)
 [[ "$local_shards" -ge 1 ]] || err "no *.safetensors shards in $MODEL_PATH — wrong or torn weights tree."
 [[ -f "$PLE_TABLE_PATH" ]] || err "PLE table missing: $PLE_TABLE_PATH (Qwen4Exp MTP layer needs it)."
+if find "$MODEL_PATH" -maxdepth 1 -type l -name '*.safetensors' | grep -q .; then
+    err "MODEL_PATH contains symlinked shards (a Hugging Face cache snapshot). They dangle inside the container mount. Download with --local-dir instead (README — Weights)."
+fi
+[[ "$(dirname "$(realpath "$PLE_TABLE_PATH")")" == "$(realpath "$MODEL_PATH")" ]] \
+    || err "PLE_TABLE_PATH must be inside MODEL_PATH (the container reads it from /models/weights/)."
 ok "Weights tree: $MODEL_PATH (${local_shards} shards)"
 ok "PLE table: $PLE_TABLE_PATH ($(du -h "$PLE_TABLE_PATH" | cut -f1))"
-
-# ---------------------------------------------------------------------------
-# PRE-BOOT XPU GATE — trivial triton vector-add must compile AND be exact
-# (mandatory standing rule; catches every remaining JIT gap in seconds)
-# ---------------------------------------------------------------------------
-if [[ "$SKIP_XPU_GATE" == "true" ]]; then
-    info "XPU gate skipped (--launch restart path)."
-elif [[ "$XPU_GATE_DISABLE" == "1" ]]; then
-    red "  === XPU GATE DISABLED (XPU_GATE_DISABLE=1) — you own every JIT gap ==="
-    log_to_run "XPU_GATE_SKIPPED=1"
-else
-    info "=== Pre-boot XPU gate (triton vector-add on one card) ==="
-    command -v docker >/dev/null 2>&1 || err "docker not found."
-    GATE_OUT=$(docker run --rm --name qwen38-xpu-gate --device /dev/dri \
-        -v "$SCRIPT_DIR/docker/gate.py:/gate.py:ro" \
-        --entrypoint python3 "$IMAGE" /gate.py 2>&1) \
-        || { echo "$GATE_OUT" | tail -5; err "XPU gate failed to run (see above)."; }
-    echo "$GATE_OUT" | grep -q "TRITON_XPU_GATE=PASS" \
-        || { echo "$GATE_OUT" | tail -5; err "XPU GATE FAIL — vector-add did not compile/verify (see above). Fix before any model boot."; }
-    ok "TRITON_XPU_GATE=PASS (compile + exact result)"
-    log_to_run "XPU_GATE=PASS"
-fi
 
 # ---------------------------------------------------------------------------
 # Image: the pinned tag/digest must exist locally (no pull). A fresh host
@@ -316,9 +302,33 @@ fi
 ok "Image present: $IMAGE_REF"
 
 # ---------------------------------------------------------------------------
+# PRE-BOOT XPU GATE — trivial triton vector-add must compile AND be exact
+# (mandatory standing rule; catches every remaining JIT gap in seconds)
+# ---------------------------------------------------------------------------
+if [[ "$SKIP_XPU_GATE" == "true" ]]; then
+    info "XPU gate skipped (--launch restart path)."
+elif [[ "$XPU_GATE_DISABLE" == "1" ]]; then
+    red "  === XPU GATE DISABLED (XPU_GATE_DISABLE=1) — you own every JIT gap ==="
+    log_to_run "XPU_GATE_SKIPPED=1"
+else
+    info "=== Pre-boot XPU gate (triton vector-add on one card) ==="
+    command -v docker >/dev/null 2>&1 || err "docker not found."
+    GATE_OUT=$(docker run --rm --name qwen38-xpu-gate --device /dev/dri \
+        -v "$SCRIPT_DIR/docker/gate.py:/gate.py:ro" \
+        --entrypoint python3 "$IMAGE_REF" /gate.py 2>&1) \
+        || { echo "$GATE_OUT" | tail -5; err "XPU gate failed to run (see above)."; }
+    echo "$GATE_OUT" | grep -q "TRITON_XPU_GATE=PASS" \
+        || { echo "$GATE_OUT" | tail -5; err "XPU GATE FAIL — vector-add did not compile/verify (see above). Fix before any model boot."; }
+    ok "TRITON_XPU_GATE=PASS (compile + exact result)"
+    log_to_run "XPU_GATE=PASS"
+fi
+
+# ---------------------------------------------------------------------------
 # Stop any running instance (validation + preflight already passed)
 # ---------------------------------------------------------------------------
-[[ -f .run/watchdog.pid ]] && { kill "$(cat .run/watchdog.pid)" 2>/dev/null || true; rm -f .run/watchdog.pid; }
+if [[ "$WD_CALLER" != "1" && -f .run/watchdog.pid ]]; then
+    kill "$(cat .run/watchdog.pid)" 2>/dev/null || true; rm -f .run/watchdog.pid
+fi
 if running "$CONTAINER_NAME"; then
     info "Stopping existing container $CONTAINER_NAME"
     docker rm -f "$CONTAINER_NAME" >/dev/null
@@ -348,7 +358,9 @@ ok "Manifest: .run/manifest.json"
 # ---------------------------------------------------------------------------
 # Wedge watchdog (mandatory; double opt-out to disable)
 # ---------------------------------------------------------------------------
-if [[ "$WEDGE_WATCHDOG_DISABLE" != "1" || "$NO_PREFLIGHT" != "true" ]]; then
+if [[ "$WD_CALLER" == "1" ]]; then
+    info "Restart requested by the running watchdog — leaving it in place (no respawn)."
+elif [[ "$WEDGE_WATCHDOG_DISABLE" != "1" || "$NO_PREFLIGHT" != "true" ]]; then
     info "Spawning wedge watchdog (interval=${WEDGE_WATCHDOG_INTERVAL}s, retries=${WEDGE_WATCHDOG_RETRIES})"
     nohup "$SCRIPT_DIR/scripts/wedge-watchdog.sh" >> .run/watchdog.log 2>&1 &
     echo "$!" > .run/watchdog.pid
@@ -385,7 +397,7 @@ docker run -d --name "$CONTAINER_NAME" \
   "${EXTRA_CCL_ARGS[@]}" \
   -e VLLM_XPU_ENABLE_XPU_GRAPH="${VLLM_XPU_ENABLE_XPU_GRAPH:-1}" \
   -e MAX_JOBS="${MAX_JOBS:-16}" \
-  $IMAGE \
+  "$IMAGE_REF" \
   python3 -m vllm.entrypoints.openai.api_server \
   --model /models/weights \
   --served-model-name "$SERVED_MODEL_NAME" \

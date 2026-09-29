@@ -21,9 +21,12 @@ ENV VLLM_TARGET_DEVICE=xpu
 ENV MAX_JOBS=16
 
 WORKDIR /build
-# [verified] their fork, their branch (sha asserted — not just recorded)
-RUN git clone --depth 1 --branch xpu-qwen4exp https://github.com/devan-carlin/vllm.git /build/vllm \
+# [verified] the fork at its pinned commit (fetched by SHA, then asserted)
+RUN git init -q /build/vllm \
  && cd /build/vllm \
+ && git remote add origin https://github.com/devan-carlin/vllm.git \
+ && git fetch -q --depth 1 origin a69fba21212952601bbacd81a2f2f93f72744eae \
+ && git checkout -q FETCH_HEAD \
  && echo "vllm_sha=$(git rev-parse HEAD)" | tee /opt/vllm-sha.txt \
  && test "$(git rev-parse HEAD)" = "a69fba21212952601bbacd81a2f2f93f72744eae"
 
@@ -66,7 +69,7 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages setuptools-rus
 # B70_WORKER_AFFINITY=1). Applied BEFORE pip install so it lands in site-packages —
 # pip copies the tree at install time; patching after is a no-op for the install.
 RUN cd /build/vllm \
- && curl -fsSL https://raw.githubusercontent.com/devan-carlin/electric-sheep/main/vllm/patches/b70-worker-affinity.patch | git apply - \
+ && curl -fsSL https://raw.githubusercontent.com/devan-carlin/electric-sheep/7d73df178d12d216596fa6c7f448878fad7d174e/vllm/patches/b70-worker-affinity.patch | git apply - \
  && echo AFFINITY_PATCH_APPLIED | tee /opt/patches-applied.txt
 
 # [verified] vLLM itself (pure-Python build; no GPU needed)

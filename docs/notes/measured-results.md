@@ -7,7 +7,7 @@ All timestamps UTC. Platform: 4x Intel Arc Pro B70, container `qwen38-flash-next
 ## 1. MNS 32 is the verified operating point
 
 - **32x600 sustained: 1,038.3 tok/s** — `scripts/soakfix.py`, agg = Σcompletion_tokens÷round_wall per round, r1 warmup discarded, sustained_agg = MEAN r2..rN. Gate was ≥ 900: **passed** (2026-09-25).
-- MNS ladder for reference (same harness): n=2 95.3 / n=4 179.9 / n=8 335.2 / n=16 629.1 / n=32 630.2 tok/s under the old MNS-16 KV split; 32 is the knee value at MML 262144.
+- MNS ladder for reference (same harness): n=2 95.3 / n=4 179.9 / n=8 335.2 / n=16 629.1 tok/s; 32 (1,038.3) is the knee value at MML 262144.
 
 ## 2. P2P lane closed — measured zero
 
@@ -42,7 +42,7 @@ All timestamps UTC. Platform: 4x Intel Arc Pro B70, container `qwen38-flash-next
 
 **Cause of the low acceptance: UNRESOLVED on current evidence.** Candidates not excluded: W4A16 quantization degrading the residual signal the draft head consumes, hook/semantics still imperfect vs the reference contract, draft-head training mismatch. Not attributed without evidence.
 
-**Verdict:** spec decode stays **OFF** — doubly confirmed (accept-collapse-under-concurrency research 46–56%; measured 47.4% single-stream net-negative on these weights). Patches preserved in [`experimental/patches/es-mtp-image-token.patch`](../experimental/patches/es-mtp-image-token.patch) and [`es-mtp-qwen4exp-mtp.patch`](../experimental/patches/es-mtp-qwen4exp-mtp.patch); the A/B harness pattern is described above; the default build does not include them.
+**Verdict:** spec decode stays **OFF** — doubly confirmed (accept-collapse-under-concurrency research 46–56%; measured 47.4% single-stream net-negative on these weights). Patches preserved in [`experimental/patches/es-mtp-image-token.patch`](../../experimental/patches/es-mtp-image-token.patch) and [`es-mtp-qwen4exp-mtp.patch`](../../experimental/patches/es-mtp-qwen4exp-mtp.patch); the A/B harness pattern is described above; the default build does not include them.
 
 ## 4. Single-stream 52.5 verified three independent ways
 
@@ -67,10 +67,10 @@ Streaming sweep, idle engine, temp 0, decode-only rate (TTFT excluded):
 
 Spread 4% from 31 to ~35K tokens — attention cost per step is not visibly bending in the operating range. Perceived slowness at long context is TTFT (1.7–2 s at 8–17K) plus the windowing artifact above, not decode rate.
 
-## 6. v0.1.15 kernel bump — applicability split (proposed, not executed)
+## 6. Future work (not executed): v0.1.15 kernel bump — applicability split
 
 From the vllm-xpu-kernels v0.1.15 release notes (wheel `0.1.15.4` on PyPI, abi3, no declared torch pin — runtime import check happens inside the window):
 
-- **Applies to B70/Xe2:** fused top-k/top-p sampler with per-row RNG state (removes the fallback in prod logs: `topk_topp_sampler does not support per-request generators. Falling back to PyTorch-native implementation`); widened `act_and_mul` vectorization (every MoE layer, every step); MoE negative-expert-ID routing fix (we run EP). Xe2 BlockFP8 grouped-GEMM listed but our backbone is W4A16 → N/A.
+- **Applies to B70/Xe2:** fused top-k/top-p sampler with per-row RNG state (removes the fallback logged at startup: `topk_topp_sampler does not support per-request generators. Falling back to PyTorch-native implementation`); widened `act_and_mul` vectorization (every MoE layer, every step); MoE negative-expert-ID routing fix (we run EP). Xe2 BlockFP8 grouped-GEMM listed but our backbone is W4A16 → N/A.
 - **Xe3P-only (headline, not our hardware):** Xe3P chunk-prefill + paged-decode attention kernels behind `VLLM_XPU_ENABLE_XE3P`; eager-path LayerNorm fusions (our decode runs captured graphs).
 - **Expected, honestly:** mid-50s single-stream if the fused sampler saves 1–2 ms of the ~19 ms serial step (1000/52.5); aggregate likely unchanged. Plan: pre-build + wheel-import check → /health gate → fidelity A/B token-for-token vs banked serial base → n=1x4 (≥52.5) and n=32x4 (≥1,038.3) → rollback = previous image (2 min) on any gate failure. No spec decode, no quantization change.

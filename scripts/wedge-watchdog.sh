@@ -58,7 +58,7 @@ PREFLIGHT_XPU_COUNT="${PREFLIGHT_XPU_COUNT:-4}"
 STALL_LIMIT=3
 RESTART_CMD="${WEDGE_RESTART_CMD:-$SCRIPT_DIR/../start.sh --launch}"
 
-RUN_DIR="$SCRIPT_DIR/.run"
+RUN_DIR="$SCRIPT_DIR/../.run"   # repo-root .run/ (shared with start.sh/stop.sh)
 WATCHDOG_LOG="$RUN_DIR/watchdog.log"
 mkdir -p "$RUN_DIR"
 

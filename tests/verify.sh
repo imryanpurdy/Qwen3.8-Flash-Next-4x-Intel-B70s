@@ -140,7 +140,7 @@ hr
 
 # ---------------------------------------------------------------------------
 # 5. Boot-receipt gate — 'Application startup complete' (the verified READY
-#    receipt of every boot of record; graphs capture inside torch.compile
+#    receipt of every verified boot; graphs capture inside torch.compile
 #    before it on this stack)
 # ---------------------------------------------------------------------------
 log "## 5. Boot-receipt gate"

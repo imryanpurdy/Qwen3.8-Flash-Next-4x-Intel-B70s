@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 # ============================================================================
 # check-weights.sh — Qwen3.8-Flash-Next W4A16 checkpoint presence + identity
@@ -6,14 +5,11 @@
 # Weights of record: devan-carlin/Qwen3.8-Flash-Next-W4A16 @ 40b8f18d
 # (17 shards ~77 GB + ple_table_qwen4exp.pt ~102 GB ≈ 180 GB total).
 #
-# Two supported layouts (auto-detected):
-#   1. HF cache layout (what the README download command produces):
-#      $HF_HOME/hub/models--devan-carlin--Qwen3.8-Flash-Next-W4A16/snapshots/
-#      → identity proof = snapshot dir name IS the pinned revision (offline,
-#        HF stores snapshots/<commit_sha>).
-#   2. Direct tree (MODEL_PATH points at a plain directory with config.json):
-#      presence + family + size checks; the rev pin is your
-#      download receipt, not provable offline from a copied tree.
+# Supported layout: a plain directory downloaded with
+#   hf download devan-carlin/Qwen3.8-Flash-Next-W4A16 --revision <rev> --local-dir <dir>
+# with MODEL_PATH in .env pointing at it. Checks presence, family and size.
+# A Hugging Face cache snapshot (symlinks into ../../blobs) is detected and
+# rejected: the symlinks dangle inside the container's bind mount.
 #
 # Usage: ./check-weights.sh
 # Exit:  0 = present, right family, sane   1 = wrong/missing/broken
@@ -41,25 +37,24 @@ fi
 source .env
 
 # ---------------------------------------------------------------------------
-# Layout 1: HF cache snapshot (rev-pin provable)
+# Locate the weights tree (direct tree from --local-dir is the supported layout)
 # ---------------------------------------------------------------------------
 HF_CACHE_DIR="${HF_HOME:-$HOME/.cache/huggingface}"
 HUB_PATH="$HF_CACHE_DIR/hub"
 ORG="${MODEL_ID_FROZEN%%/*}"
 NAME="${MODEL_ID_FROZEN##*/}"
 CACHE_MODEL_PATH="$HUB_PATH/models--${ORG}--${NAME}"
-if [[ -d "$CACHE_MODEL_PATH/snapshots/$REV_FROZEN" ]]; then
-    MODE="hf-cache"
-    MODEL_PATH="${MODEL_PATH:-$CACHE_MODEL_PATH/snapshots/$REV_FROZEN}"
-    SNAP_DIR="$CACHE_MODEL_PATH/snapshots/$REV_FROZEN"
-    ok "Rev pin:       $REV_FROZEN (snapshot dir name matches exactly — offline identity proof)"
-elif [[ -n "${MODEL_PATH:-}" && -f "$MODEL_PATH/config.json" ]]; then
+if [[ -n "${MODEL_PATH:-}" && -f "$MODEL_PATH/config.json" ]]; then
     MODE="direct-tree"
     SNAP_DIR="$MODEL_PATH"
-    warn "Direct tree mode: identity = your download receipt (rev $REV_FROZEN); rev pin is NOT provable from a copied tree."
-    warn "For a provable identity, use the README download command (HF cache layout)."
+    info "Direct tree (the supported layout): identity = your download command (rev $REV_FROZEN)."
+elif [[ -d "$CACHE_MODEL_PATH/snapshots/$REV_FROZEN" ]]; then
+    MODE="hf-cache"
+    SNAP_DIR="$CACHE_MODEL_PATH/snapshots/$REV_FROZEN"
+    ok "Rev pin:       $REV_FROZEN (snapshot dir name matches)"
+    warn "Hugging Face cache layout found, but start.sh cannot serve it (symlinks dangle in the container). Re-download with --local-dir."
 else
-    err "Weights not found. Expected HF cache snapshot at $CACHE_MODEL_PATH/snapshots/$REV_FROZEN, or a direct tree at MODEL_PATH (.env: '${MODEL_PATH:-unset}') with config.json."
+    err "Weights not found. Set MODEL_PATH in .env to the directory from the README download command (hf download ... --local-dir)."
 fi
 
 info "Layout:        $MODE"
@@ -73,6 +68,9 @@ info "Tree:          $SNAP_DIR"
 SHARDS=$(find "$SNAP_DIR" -maxdepth 1 -name '*.safetensors' 2>/dev/null | wc -l)
 [[ "$SHARDS" -ge 1 ]] || err "No .safetensors shards in $SNAP_DIR — empty or partial download."
 info "Shards found:  $SHARDS"
+if find "$SNAP_DIR" -maxdepth 1 -type l -name '*.safetensors' | grep -q .; then
+    err "Shards in $SNAP_DIR are symlinks (Hugging Face cache layout). They break inside the container mount; download with --local-dir (README, Weights)."
+fi
 
 PLE_FILE="${PLE_TABLE_PATH:-$SNAP_DIR/ple_table_qwen4exp.pt}"
 if [[ -f "$PLE_FILE" ]]; then

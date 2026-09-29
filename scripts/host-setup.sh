@@ -27,7 +27,7 @@ if [[ $EUID -ne 0 ]]; then SUDO="sudo -n"; $SUDO true 2>/dev/null || SUDO="sudo"
 
 GUC_SHA="70d74627e395347ea04c37168d92f01c9e940f4b32e0743b6350ca808fdb67bb"
 GUC_BYTES=377664
-FW_URL="https://raw.githubusercontent.com/torvalds/linux/fb0889c0/firmware/xe/bmg_guc_70.bin"
+FW_URL="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/xe/bmg_guc_70.bin?id=fb0889c0"
 FW_DIR="/lib/firmware/xe"
 FW="$FW_DIR/bmg_guc_70.bin"
 KERNEL="6.17.0-1010-intel"
@@ -67,8 +67,8 @@ GRUB="/etc/default/grub"
 if grep -E '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB" | grep -q 'iommu=off'; then
     ok "grub: iommu=off already set"
 else
-    info "Setting GRUB_CMDLINE_LINUX_DEFAULT=\"iommu=off\""
-    $SUDO sed -i -E 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="iommu=off"/' "$GRUB"
+    info "Appending iommu=off to GRUB_CMDLINE_LINUX_DEFAULT (existing parameters kept)"
+    $SUDO sed -i -E 's/^(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*)"/\1 iommu=off"/' "$GRUB"
     grep -E '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB" | grep -q 'iommu=off' || err "grub edit failed"
     REBOOT_NEEDED=1
 fi
