@@ -111,6 +111,37 @@ log_tail() {
     docker logs --tail 200 "$CONTAINER_NAME" 2>/dev/null || true
 }
 
+metrics_sample() {
+    # Summed vLLM counters: running requests, generated tokens, prompt tokens.
+    curl -fsS -m 8 "http://localhost:$PORT/metrics" 2>/dev/null | awk '
+        /^vllm:num_requests_running/ {r+=$NF}
+        /^vllm:generation_tokens_total/ {g+=$NF}
+        /^vllm:prompt_tokens_total/ {p+=$NF}
+        END {printf "%d %d %d\n", r+0, g+0, p+0}'
+}
+
+engine_progressing() {
+    # Load-aware gate (2026-10-04): the watchdog bounced a healthy engine saturated by
+    # 8x~120K/200K-token prefills - every gen-probe queued out past its 60s window and
+    # log_size is constant once the log exceeds the 2000-line tail, so stalls accumulated
+    # into a restart. Under load a 1-token probe is NOT liveness evidence. Two /metrics
+    # samples LOAD_SAMPLE_S apart: requests running AND either counter advanced =
+    # busy, not wedged. Prompt tokens count as progress: a long prefill generates
+    # ZERO output tokens for minutes, so the generation counter alone misreads a
+    # busy engine as wedged (2026-10-03 23:53Z restart was that, not a real wedge).
+    # Fail-open: metrics unavailable -> this path never restarts.
+    local s1 s2
+    s1=$(metrics_sample) || return 0
+    sleep "${LOAD_SAMPLE_S:-30}"
+    s2=$(metrics_sample) || return 0
+    read -r r1 g1 p1 <<<"$s1"
+    read -r r2 g2 p2 <<<"$s2"
+    info "load-guard samples: s1=[\"$s1\"] s2=[\"$s2\"] (running gen prompt)"
+    [[ "${r2:-0}" -gt 0 ]] || return 1
+    [[ "${g2:-0}" -gt "${g1:-0}" || "${p2:-0}" -gt "${p1:-0}" ]] && return 0
+    return 1
+}
+
 WEDGE_PATTERN='Engine reset: engine_class=ccs|bcs|Fault response: Unsuccessful|guc_exec_queue_timedout_job|EngineDeadError|RPC call to sample_tokens timed out'
 
 capture_and_kill() {
@@ -180,6 +211,13 @@ ok "Watchdog live. Liveness = gen-probe (1-token completion). Restart via: $REST
 while :; do
     sleep "$INTERVAL"
 
+    # xe engine-reset monitor: log dmesg "Engine reset" count each cycle.
+    # sudo -n: dmesg may be dmesg_restrict'ed (EPERM silently reads 0 otherwise).
+    _rc_total=$(sudo -n dmesg 2>/dev/null | grep -acE "Engine reset" || true)
+    _rc_total=${_rc_total:-0}
+    info "xe engine resets: total=$_rc_total new_this_cycle=$(( _rc_total - ${_rc_last:-0} ))"
+    _rc_last=$_rc_total
+
     if container_running; then
         ever_running=true
     fi
@@ -188,6 +226,14 @@ while :; do
         ready_once=true
         stall_count=0
         last_log_size=$(log_size)
+        continue
+    fi
+
+    # Load-aware gate: under heavy load (long prefills in flight), a stalled
+    # gen-probe is NOT evidence of a wedge. Counters advancing = busy.
+    if engine_progressing; then
+        info "[$(date -u +%H:%M:%SZ)] probe failed but counters advancing (busy, not wedged) - no stall counted"
+        stall_count=0
         continue
     fi
 
