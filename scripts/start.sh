@@ -9,7 +9,7 @@
 # Commands: start | stop | restart | status | logs   (default: start)
 #   ./scripts/start.sh               # validate -> preflight -> weights -> XPU gate -> image -> launch
 #   ./scripts/start.sh stop          # watchdog first, then the container (graceful; delegates to stop.sh)
-#   ./scripts/start.sh restart       # full validation path, then stop + start
+#   ./scripts/start.sh restart       # full validation path, then stop + start (implies --replace)
 #   ./scripts/start.sh status        # container + API + watchdog state (delegates to status.sh)
 #   ./scripts/start.sh logs          # docker logs -f
 #   ./scripts/start.sh --launch      # launch-only, skips the XPU gate (watchdog restart path)
@@ -74,7 +74,11 @@ DRY_RUN=false
 REPLACE=false
 for arg in "$@"; do
     case "$arg" in
-        start|stop|restart|status|logs) CMD="$arg" ;;
+        start|stop|status|logs) CMD="$arg" ;;
+        # restart IS an explicit stop+start intent: it carries --replace by
+        # definition (the guard law requires deliberate permission to stop a
+        # live lane; typing `restart` IS that permission).
+        restart) CMD="start" REPLACE=true ;;
         --no-preflight) NO_PREFLIGHT=true ;;
         --launch) SKIP_XPU_GATE=true ;;        # watchdog restart path
         --replace) REPLACE=true ;;             # explicit permission to stop a running container
