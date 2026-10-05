@@ -97,7 +97,7 @@ RESTART_CMD="${PROD_RESTART_CMD:-${ESLANE_RESTART_CMD:-$SCRIPT_DIR/start.sh --la
 # .env contract: when spawned by start.sh, CONTAINER_NAME/PORT/SERVED_MODEL_NAME
 # arrive via the exported environment. A bare manual run picks up the lane's
 # .env here (same vars start.sh reads) — no silent desync from the lane.
-if [[ -z "$WD_STATE_CMD" ]]; then   # stub test drives its own env — never source .env under test hooks
+if [[ -z "${WD_STATE_CMD:-}" ]]; then   # stub test drives its own env — never source .env under test hooks
     for _env_file in "${LANE_DIR:-$SCRIPT_DIR/..}/.env" "$SCRIPT_DIR/../.env"; do
         [[ -f "$_env_file" ]] && { set -a; . "$_env_file"; set +a; break; }
     done
