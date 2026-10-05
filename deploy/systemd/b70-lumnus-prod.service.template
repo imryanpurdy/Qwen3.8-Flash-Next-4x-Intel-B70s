@@ -25,7 +25,7 @@
 #   launched-or-not state; liveness itself is the watchdog's job.
 # - LANE_DIR is NOT set here: the unit assumes the repo checkout IS the lane
 #   root (WorkingDirectory). The watchdog's restart command resolves to the
-#   same checkout (PROD_RESTART_CMD default <repo>/scripts/start.sh --launch).
+#   same checkout (PROD_RESTART_CMD default <repo>/scripts/start.sh --launch --replace).
 # ============================================================================
 
 [Unit]

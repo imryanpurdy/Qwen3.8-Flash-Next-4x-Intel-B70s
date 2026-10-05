@@ -46,6 +46,9 @@ pre-Lumnus production stack — devan fork + wtdcode AWQ checkpoint at MNS 32
    `bmg_guc_70.bin` sha256 match (70.65); `iommu=off` on the kernel cmdline;
    weights-mount ≥2 GiB free (hard) / root ≥40 GiB. `--no-preflight` skips with
    a loud banner and a `PREFLIGHT_SKIPPED=1` log line — you own every gate.
+   A `DRY_RUN` environment variable hard-errors on EVERY subcommand (the
+   dry-run switch is the `--dry-run` flag only) — `unset DRY_RUN` or use
+   `scripts/stop.sh` directly if a stray export blocks a graceful stop.
 3. **Weights identity gate** — the local tree must exist with `config.json` and
    ≥1 `.safetensors` shard; the PLE table file must exist. Never launch into a
    wrong or torn tree.

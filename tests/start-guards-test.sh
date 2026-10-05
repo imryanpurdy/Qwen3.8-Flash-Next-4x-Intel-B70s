@@ -183,6 +183,34 @@ fi
 kill "$WD_PID" 2>/dev/null; wait "$WD_PID" 2>/dev/null
 
 # ============================================================================
+# G5 (review D1): `restart` carries --replace by definition — the documented
+# stop+start path must reach the stop path (not refuse) on a live container.
+# The launch itself stub-refuses by design (stub image cannot boot).
+# ============================================================================
+echo "== G5: restart implies --replace =="
+: > "$SANDBOX/docker-calls.log"
+out="$(WEDGE_WATCHDOG_DISABLE=1 XPU_GATE_DISABLE=1 run_start --no-preflight restart 2>&1)"; rc=$?
+if grep -q "STUB-DOCKER-MUTATE: rm -f" "$SANDBOX/docker-calls.log" 2>/dev/null; then
+    pass "G5: restart reached the stop path (docker rm recorded)"
+else
+    fail "G5: restart did not reach the stop path (rc=$rc): $(echo "$out" | tail -3)"
+fi
+# Arg-mapping proof: `restart` must map to CMD=start + REPLACE=true (parse-level
+# check; the full-gate path needs real hardware for preflight, out of stub scope)
+mapline="$(grep -A1 'restart) CMD=' "$SCRIPT_DIR/scripts/start.sh" | head -2 | tr '\n' ' ')"
+if [[ "$mapline" == *'restart) CMD="start" REPLACE=true'* ]]; then
+    pass "G5: restart maps to start+REPLACE=true in the arg parser"
+else
+    fail "G5: restart arg mapping wrong: $mapline"
+fi
+# and restart must NOT print the refusal
+if grep -q "REFUSING: container" <<<"$out"; then
+    fail "G5: restart wrongly refused"
+else
+    pass "G5: restart not refused"
+fi
+
+# ============================================================================
 if [[ "$FAIL" == "0" ]]; then
     echo "START-GUARDS: PASS"
 else
