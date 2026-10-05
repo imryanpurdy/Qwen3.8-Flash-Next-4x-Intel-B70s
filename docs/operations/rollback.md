@@ -8,19 +8,28 @@ alert trigger and the watchdog evidence.
 
 | | Production | Rollback |
 |---|---|---|
-| Deploy dir | `<lane>/` (prod-lumnus) | `<rollback-lane>/` (es-lane side-lane stack, deploy of record 2026-09-23) |
+| Deploy dir | `<lane>/` (prod-lumnus) | `rollback/devan-fork/` (in-repo es-lane kit, deploy of record 2026-09-23) |
 | Container | `b70-lumnus-prod` | `es-lane` |
 | Engine | Lumnus b70-flash-next (vLLM v0.30.0 + patches 0001–0019) | vLLM fork `devan-carlin/vllm@xpu-qwen4exp` (a69fba21) on `intel/omix:0.4.0-devel-ubuntu24.04` |
 | Image | `b70-lumnus-trial:v1` (local build of record) | **pinned by digest**: `es-lane@sha256:15a806fc7367a44f6ab66d42e9f1b237fbb7431f4e913eb9ea197505f8d8417a` |
-| Line | TP4+EP, MML 262144, MNS 32, kv fp8, 64 GiB CPU KV-offload | TP4+EP, MML 262144, MNS 32, kv fp8, parsers qwen3/qwen3_xml |
+| Checkpoint | wtdcode AWQ W4A16 (snapshot) | devan-carlin W4A16 (`40b8f18d`) — the same engine+checkpoint line as the pre-Lumnus production baseline (README "Results"), which is why the rollback reproduces those numbers |
+| Line | TP4+EP, MML 262144, MNS 32, **bf16 KV** (no `--kv-cache-dtype` flag; vLLM default follows `--dtype bfloat16`), 64 GiB CPU KV-offload | TP4+EP, MML 262144, **MNS 4**, **fp8 KV** (explicit `--kv-cache-dtype fp8`), **no KV-offload tier**, parsers qwen3/qwen3_xml |
 | Sampler | `--override-generation-config` in serve args (see production-lane.md) | `OVERRIDE_GENERATION_CONFIG` in `.env` (same pinned set) |
 | Port / served name | 8022 / `qwen-256k` | 8022 / `qwen-256k` — **identical**, so no client/gateway reconfiguration is needed on rollback; only the container swaps |
+
+**PLE on the rollback engine:** it never executes. The devan fork's PLE table
+path was absent on the rig and the guard short-circuited (no `FileNotFoundError`
+in the boot log; forward never reached `_ensure_table` — only the capture-legal
+early-return branch ran). The rollback line is a dense fallback, not a PLE
+line; quality/latency deltas vs the Lumnus line include PLE being live.
 
 The rollback lane is a complete, self-contained stack with its own `start.sh`
 (same design rules: validate → preflight → weights gate → XPU gate → image
 gate → launch → READY gate; mandatory watchdog; `stop`/`restart`/`status`/`logs`
 subcommands) and its own `.env` with the image **pinned by digest** — a rollback
-never floats to a different image.
+never floats to a different image. The kit lives in-repo at
+`rollback/devan-fork/` (`start.sh`, `stop.sh`, `.env.example` — `cp
+.env.example .env` there; the repo-root `.env` belongs to the production lane).
 
 ## Rollback criteria
 
@@ -60,7 +69,7 @@ pgrep -fa wedge-watchdog.sh                                          # expect: n
 
 # 2. Start the rollback lane (full gate path — preflight, weights, XPU gate,
 #    digest-pinned image, watchdog, READY poll):
-cd <rollback-lane> && ./start.sh
+cd rollback/devan-fork && ./start.sh    # (repo clone; or the deployed lane dir)
 #    Boot is ~4–5 min; READY is printed only after /v1/models answers AND
 #    "Application startup complete" appears in the container logs.
 
@@ -74,7 +83,7 @@ curl -s http://127.0.0.1:8022/v1/chat/completions \
 # then the strict tool-call check (scripts/toolcall.py, small count) — verify.md.
 
 # 4. Confirm the rollback watchdog is up (single instance):
-<rollback-lane>/start.sh status
+rollback/devan-fork/start.sh status
 ```
 
 **Do not run both lanes at once** — they share port 8022 and the watchdog

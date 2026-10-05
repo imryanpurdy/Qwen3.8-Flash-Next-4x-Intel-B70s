@@ -1,29 +1,33 @@
 #!/usr/bin/env bash
 # ============================================================================
-# wedge-watchdog-eslane.sh — side-lane (es-lane) wedge watchdog
-# Adapted from wedge-watchdog.sh (production, md5 3b7f1384). DIFF DISCIPLINE:
-# every changed line is one of — container name, port, served model id, log
-# source (docker logs instead of repo .run/server.log), restart command
-# (start.sh --launch kept as the interface), boot-grace comment, or a comment.
-# Nothing else differs. The Xe2 Level-Zero wedge signatures are UNCHANGED
-# (same silicon, same Level Zero stack).
+# wedge-watchdog.sh — production wedge watchdog (spawned by start.sh; the
+# es-lane side-lane lineage this was adapted from is retired — this IS the
+# production watchdog, lane-agnostic via .env / LANE_DIR).
+# SINGLE-INSTANCE GUARD IS HOST-WIDE BY DESIGN: start.sh's
+# `pgrep -f 'wedge-watchdog\.sh$'` allows exactly ONE watchdog per host —
+# one rig, one serving lane. LANE_DIR separates runtime STATE (logs,
+# pidfiles, wedge captures), not concurrency: two lanes on one rig would
+# fight over the same GPUs, so a second watchdog is a bug, not a feature.
 #
 # The Xe2 Level-Zero wedge kills the serving job every 2-6 h under load
 # (kernel signature: "Engine reset: engine_class=ccs|bcs",
 #  "Fault response: Unsuccessful", "guc_exec_queue_timedout_job"). Only a
 # container restart recovers; in-flight requests are lost.
 #
-# Differences from the production watchdog (all intentional):
-#   - container es-lane, port 8022, served id qwen-256k
-#   - engine log source is `docker logs es-lane` (the side lane has no host
-#     log-tail follower); log_size/log_tail read the container log directly
+# Design notes:
+#   - container/port/served-id come from .env (CONTAINER_NAME/PORT/
+#     SERVED_MODEL_NAME); defaults below match the production lane.
+#   - engine log source is `docker logs $CONTAINER_NAME` (no host log-tail
+#     follower); log_size/log_tail read the container log directly
 #     (bounded: last 2000 lines / last 200 lines)
-#   - boot grace: es-lane boots in ~4-5 min (vs ~8-9 production). The same
-#     cold-load guard applies — no stall counting until /v1/models answers
-#     once — so no separate grace constant is needed.
-#   - restart command: ESLANE_RESTART_CMD (default: "$SCRIPT_DIR/start.sh"
-#     --launch). ON-BOX DEPLOY NOTE: the deploy directory carries its own
-#     copy (acceptance-v2 pattern). Restore scripts MUST use the deploy-dir
+#   - boot grace: the lane boots in ~4-5 min. The same cold-load guard
+#     applies — no stall counting until /v1/models answers once — so no
+#     separate grace constant is needed.
+#   - restart command: PROD_RESTART_CMD (default: "$SCRIPT_DIR/start.sh"
+#     --launch; start.sh exports exactly this name when it spawns the
+#     watchdog). ESLANE_RESTART_CMD is accepted as a deprecated alias.
+#     ON-BOX DEPLOY NOTE: the deploy directory carries its own copy
+#     (acceptance-v2 pattern). Restore scripts MUST use the deploy-dir
 #     watchdog path, NOT <watchdog-path-in-operator-home> — that path does not
 #     exist and a restore launched it silently today (ledger-corrected).
 #
@@ -37,8 +41,8 @@
 # DISABLE (double opt-out, non-negotiable, same as production):
 # WEDGE_WATCHDOG_DISABLE=1 AND PREFLIGHT_SKIPPED=1 together.
 #
-# State lives under .run/ in this repo only (watchdog-eslane.log,
-# wedge-<ts>.log).
+# State lives under the lane's .run/ ($LANE_DIR/.run, default repo root):
+# watchdog.log, wedge-<ts>.log — the same dir status.sh and stop.sh read.
 # ============================================================================
 set -euo pipefail
 
@@ -71,15 +75,35 @@ fi
 
 INTERVAL="${WEDGE_WATCHDOG_INTERVAL:-60}"
 RETRIES="${WEDGE_WATCHDOG_RETRIES:-3}"
-CONTAINER_NAME="${CONTAINER_NAME:-es-lane}"
+CONTAINER_NAME="${CONTAINER_NAME:-b70-lumnus-prod}"
 PORT="${PORT:-8022}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen-256k}"
 PREFLIGHT_XPU_COUNT="${PREFLIGHT_XPU_COUNT:-4}"
-STALL_LIMIT=3
-RESTART_CMD="${ESLANE_RESTART_CMD:-$SCRIPT_DIR/../start.sh --launch}"
+STALL_LIMIT="${STALL_LIMIT:-3}"
+# LIVENESS_CMD: test hook — when set, it REPLACES health_ok+gen_probe_ok as
+# the liveness signal (exit 0 = alive). Default empty = the real curl probes.
+LIVENESS_CMD="${LIVENESS_CMD:-}"
+# PROD_RESTART_CMD is the name start.sh exports (start.sh watchdog block) —
+# the watchdog MUST read the name its spawner writes. ESLANE_RESTART_CMD is a
+# deprecated alias (old side-lane deployments). Fallback resolves to
+# scripts/start.sh (this script's own dir), NOT ../start.sh — the deploy-dir
+# path trap (a restore once launched a nonexistent on-box path silently).
+RESTART_CMD="${PROD_RESTART_CMD:-${ESLANE_RESTART_CMD:-$SCRIPT_DIR/start.sh --launch}}"
 
-RUN_DIR="$SCRIPT_DIR/.run/eslane"
-WATCHDOG_LOG="$RUN_DIR/watchdog-eslane.log"
+# State lives in the LANE's .run/ — same derivation as start.sh/status.sh/
+# stop.sh (LANE_DIR default = repo root = this script's parent), so
+# status.sh tails this log and stop.sh's "wedge evidence" glob finds the
+# captures. (Was: $SCRIPT_DIR/.run/eslane — invisible to both.)
+# .env contract: when spawned by start.sh, CONTAINER_NAME/PORT/SERVED_MODEL_NAME
+# arrive via the exported environment. A bare manual run picks up the lane's
+# .env here (same vars start.sh reads) — no silent desync from the lane.
+if [[ -z "$WD_STATE_CMD" ]]; then   # stub test drives its own env — never source .env under test hooks
+    for _env_file in "${LANE_DIR:-$SCRIPT_DIR/..}/.env" "$SCRIPT_DIR/../.env"; do
+        [[ -f "$_env_file" ]] && { set -a; . "$_env_file"; set +a; break; }
+    done
+fi
+RUN_DIR="${LANE_DIR:-$SCRIPT_DIR/..}/.run"
+WATCHDOG_LOG="$RUN_DIR/watchdog.log"
 mkdir -p "$RUN_DIR"
 
 device_count() {
@@ -100,7 +124,13 @@ device_count() {
     echo 0
 }
 
+WD_STATE_CMD="${WD_STATE_CMD:-}"   # test hook: echoes running|stalled|dead (see tests/watchdog-restart-test.sh)
 container_running() {
+    if [[ -n "$WD_STATE_CMD" ]]; then
+        # Test hook: the stub's verdict IS the answer (never consult docker).
+        [[ "$($WD_STATE_CMD)" == "running" ]]
+        return
+    fi
     docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER_NAME"
 }
 
@@ -113,7 +143,7 @@ health_ok() {
 }
 
 gen_probe_ok() {
-    # Executor liveness — 1 token must actually generate. es-lane answers in
+    # Executor liveness — 1 token must actually generate. The lane answers in
     # seconds when healthy (MML 262144, admission open).
     if command -v curl >/dev/null 2>&1; then
         curl -fsS -m 60 -X POST "http://localhost:$PORT/v1/chat/completions" \
@@ -123,6 +153,9 @@ gen_probe_ok() {
 }
 
 log_size() {
+    # Test hook: stub log-size source (keeps the numeric-only contract).
+    # Test hook: stub log-size source — RUN the command (test passes 'echo 0').
+    [[ -n "$WD_STATE_CMD" ]] && { eval "${WD_LOG_SIZE_CMD:-echo 0}"; return; }
     # Bounded container-log size (last 2000 lines) — proxy for "log advanced".
     # Numeric-only: docker CLI failure text (multi-line) must never reach the
     # -gt comparison (2026-10-03 line-215 "[[: 0\n0: syntax error" crash).
@@ -171,6 +204,12 @@ capture_and_kill() {
     local reason="$1" ts
     ts=$(date -u +%Y%m%dT%H%M%SZ)
     local wedge_log="$RUN_DIR/wedge-${ts}.log"
+    # Test hook: stub lane has no docker container to capture/kill.
+    if [[ -n "$WD_STATE_CMD" ]]; then
+        { echo "=== WEDGE DETECTED $(date -u) ==="; echo "reason : $reason"; echo "retry  : $((retries_used + 1))/$RETRIES  interval=${INTERVAL}s"; } > "$wedge_log"
+        echo "$wedge_log"
+        return
+    fi
     {
         echo "=== WEDGE DETECTED $(date -u) ==="
         echo "reason : $reason"
@@ -228,7 +267,7 @@ ever_running=false
 ready_once=false   # cold-load guard: no stall counting until /v1/models answers once
 last_log_size=$(log_size)
 
-info "Wedge watchdog (es-lane) starting: interval=${INTERVAL}s retries=${RETRIES} container=$CONTAINER_NAME port=$PORT model=$SERVED_MODEL_NAME"
+info "Wedge watchdog starting: interval=${INTERVAL}s retries=${RETRIES} container=$CONTAINER_NAME port=$PORT model=$SERVED_MODEL_NAME state=$RUN_DIR"
 ok "Watchdog live. Liveness = gen-probe (1-token completion). Restart via: $RESTART_CMD (max ${RETRIES}x). py-spy captures before any restart." | tee -a "$WATCHDOG_LOG"
 
 while :; do
@@ -243,7 +282,14 @@ while :; do
         ever_running=true
     fi
 
-    if health_ok && gen_probe_ok; then
+    if [[ -n "$LIVENESS_CMD" ]]; then
+        _alive=false; if eval "$LIVENESS_CMD" >/dev/null 2>&1; then _alive=true; fi
+    elif health_ok && gen_probe_ok; then
+        _alive=true
+    else
+        _alive=false
+    fi
+    if [[ "$_alive" == "true" ]]; then
         ready_once=true
         stall_count=0
         last_log_size=$(log_size)

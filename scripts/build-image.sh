@@ -79,6 +79,14 @@ ok "Lumnus repo at pinned commit: $ACTUAL"
 # The Dockerfile builds from the REPOSITORY ROOT (patches live in ./patches).
 # Build args per the Dockerfile header: GIT_SHA = release version,
 # SOURCE_SHA = the pinned commit (lands in the image label — verified below).
+# Retag guard: building -t "$IMAGE" REPLACES any existing local image with the
+# same tag — if the production image of record is present, that would retag
+# production (forbidden). Refuse unless the operator forces it (fresh hosts,
+# where no production image exists, are unaffected).
+if docker image inspect "$IMAGE" >/dev/null 2>&1 && [[ "${FORCE_BUILD:-0}" != "1" ]]; then
+    err "Image $IMAGE already exists locally — building would retag it (the production image of record on this host). Refusing. Set FORCE_BUILD=1 to override deliberately."
+fi
+PROD_ID_PRE=$(docker image inspect "b70-lumnus-trial:v1" --format '{{.Id}}' 2>/dev/null | sed 's/^sha256://' || true)
 info "Building $IMAGE (this applies ~21 patches and runs both overlay gates; several minutes)..."
 docker buildx build \
     -f image/Dockerfile \
@@ -99,9 +107,15 @@ BUILT_REV=$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.
 ok "Image $IMAGE built; revision label = pinned commit $LUMNUS_PIN"
 
 BUILT_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}' | sed 's/^sha256://')
-if docker image inspect "b70-lumnus-trial@sha256:6021b4b8d99d6fa7e139dff53028356135201eb4e6479f091ce55f0f78c4307d" >/dev/null 2>&1 \
-   || docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx "b70-lumnus-trial:v1"; then
-    PROD_ID=$(docker image inspect "b70-lumnus-trial:v1" --format '{{.Id}}' | sed 's/^sha256://')
+# Compare only against a PRE-BUILD production reference (captured before the
+# build): the pinned digest if pullable, else the pre-build :v1 ID. Comparing
+# against the just-built tag itself would be vacuous on a fresh host.
+if docker image inspect "b70-lumnus-trial@sha256:6021b4b8d99d6fa7e139dff53028356135201eb4e6479f091ce55f0f78c4307d" >/dev/null 2>&1; then
+    PROD_ID=$(docker image inspect "b70-lumnus-trial@sha256:6021b4b8d99d6fa7e139dff53028356135201eb4e6479f091ce55f0f78c4307d" --format '{{.Id}}' | sed 's/^sha256://')
+elif [[ -n "${PROD_ID_PRE:-}" ]]; then
+    PROD_ID="$PROD_ID_PRE"
+fi
+if [[ -n "${PROD_ID:-}" ]]; then
     if [[ "$BUILT_ID" == "$PROD_ID" ]]; then
         ok "Byte-identical to the production image of record (sha256 $BUILT_ID)"
     else

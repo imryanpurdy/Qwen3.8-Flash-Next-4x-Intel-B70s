@@ -3,7 +3,7 @@
 Two tiers: **smoke** (after every restart/rollback, minutes) and **full gate**
 (before any promotion or after engine/flag changes, ~1 h). All harnesses live
 in the repo: `tests/verify.sh` orchestrates the full gate;
-`scripts/toolcall.py`, `scripts/needle-probe.py`, `scripts/soakfix.py`,
+`scripts/toolcall.py`, `scripts/needle_probe.py`, `scripts/soakfix.py`,
 `scripts/single-stream.py` are the harnesses. Prefix/recall scans live on the
 host (`prefix_scan.py`, `recall100k.py`) and are run against the lane port.
 
@@ -36,7 +36,7 @@ in `.run/verify.out`. Gates (all must PASS):
 | # | Gate | Harness | Pass condition |
 |---|---|---|---|
 | 1 | Tool calls | `scripts/toolcall.py --count 20` | 20/20 structural EQUIV + multi-tool `CORRECT_PICK` + nested-args `PASS` |
-| 2 | 97K needle | `scripts/needle-probe.py` (engine-calibrated via `usage.prompt_tokens`) | `CORRECT=YES` + `SIZE_OK=YES` (≥97,000 **engine-confirmed** tokens), salted, temp 0 |
+| 2 | 97K needle | `scripts/needle_probe.py` (engine-calibrated via `usage.prompt_tokens`) | `CORRECT=YES` + `SIZE_OK=YES` (≥97,000 **engine-confirmed** tokens), salted, temp 0 |
 | 3 | Sustained (GATE metric) | `scripts/soakfix.py --n 32 --max-tokens 600 --rounds 15` | MEDIAN r2..r15 within 10% of 1,038.3 tok/s (band 934.5–1142.1) **and** soak clean (0 errors, post-check OK); r1 discarded as warmup |
 | 4 | Single-stream | `scripts/single-stream.py` (N=20, first discarded) | median of 19 ≥ 40 tok/s (validated band 52.3–52.8) |
 | 5 | Boot receipt | container logs | ≥1 `Application startup complete` line |

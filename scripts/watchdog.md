@@ -9,9 +9,10 @@ wedge (mechanism + captures: [`../docs/notes/gdn-l0-wedge.md`](../docs/notes/gdn
 | Port | 8022 (`PORT` in `.env`) |
 | Served model id | `qwen-256k` (`SERVED_MODEL_NAME` in `.env`) |
 | Log source | `docker logs $CONTAINER_NAME` (bounded: size=last 2000 lines, tail=last 200) |
-| Restart command | `start.sh --launch` (launch-only; skips the XPU gate) |
+| Restart command | `PROD_RESTART_CMD` (default `scripts/start.sh --launch`; launch-only, skips the XPU gate) |
 | Boot time | ~4–5 min |
-| State dir | `.run/` (`watchdog.log`, `wedge-<ts>.log`, `watchdog.pid`) |
+| State dir | `$LANE_DIR/.run/` (default repo root; `watchdog.log`, `wedge-<ts>.log`, `watchdog.pid` — same dir status.sh/stop.sh read) |
+| Single instance | host-wide `pgrep` guard BY DESIGN — one rig, one serving lane |
 
 Liveness is a **gen-probe**: a 1-token chat completion proves the executor
 advances (a wedged engine can hold `/v1/models` up). Capture-first: py-spy
