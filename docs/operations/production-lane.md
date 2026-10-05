@@ -25,7 +25,7 @@ happened once (ledger-corrected 2026-10-04).
 | Runtime state | `.run/` | `start.log`, `manifest.json`, `prod/watchdog.pid`, `prod/watchdog.log`, `prod/wedge-<ts>.log` |
 
 Engine of record: Lumnus b70-flash-next (vLLM v0.30.0 + Lumnus patch series
-0001–0019), image `b70-lumnus-trial:v1` (local build of record), wtdcode AWQ
+0001–0019 — sub-lettered, 21 files; see `docs/engine/PROVENANCE.md`), image `b70-lumnus-trial:v1` (local build of record), wtdcode AWQ
 W4A16 checkpoint, INT8 PLE n-gram table served from NVMe (patch 0013 native
 reader), TP4 + expert-parallel, MML 262144, MNS 32, 64 GiB CPU KV-offload tier.
 Rollback lane (separate deploy directory, see `rollback.md`): the prior
@@ -139,8 +139,9 @@ Loop (interval 60 s, `.env`):
 9. **Restart**: via `PROD_RESTART_CMD` (default `<lane>/start.sh --launch`),
    **bounded to 3 retries** (`WEDGE_WATCHDOG_RETRIES`); after that it gives up
    loudly and exits — a human takes over; evidence in `.run/prod/wedge-*.log`.
-10. **Single instance**: `start.sh` will not spawn a second watchdog while
-    `pgrep -f wedge-watchdog.sh` finds one.
+10. **Single instance (host-wide, by design)**: `start.sh` will not spawn a
+    second watchdog while `pgrep -f wedge-watchdog.sh` finds one — one rig,
+    one serving lane. `LANE_DIR` separates state dirs, not concurrency.
 
 ## Sentinel (`prod-sentinel.sh`) — alert-only
 

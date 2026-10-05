@@ -43,7 +43,7 @@ gate() {  # gate <name> <ok:0|1>
 
 command -v docker >/dev/null 2>&1 || { echo "docker missing"; exit 2; }
 docker ps --format '{{.Names}}' | grep -qx "${CONTAINER_NAME:-qwen38-flash-next}" \
-    || { echo "FATAL: engine not running (./start.sh)"; exit 2; }
+    || { echo "FATAL: engine not running (./scripts/start.sh)"; exit 2; }
 
 log "# VERIFY RUN $(date -u +%FT%TZ)"
 log "# engine: $(docker inspect -f '{{.Config.Image}}' ${CONTAINER_NAME:-qwen38-flash-next})"
@@ -70,15 +70,15 @@ gate "tool-call structural ${TC_OK:-?}/${TC_TOT:-?} + multitool(${MT:-MISS}) + n
 hr
 
 # ---------------------------------------------------------------------------
-# 2. 97K needle — needle-probe.py (v2.1 wrapper over needle_probe,
-#    engine-calibrated sizing); PASS = CORRECT + SIZE_OK >= 97000 engine tokens
+# 2. 97K needle — needle_probe.py (v2.1, engine-calibrated sizing);
+#    PASS = CORRECT + SIZE_OK >= 97000 engine tokens
 # ---------------------------------------------------------------------------
 log "## 2. 97K needle probe"
-log "   harness: scripts/needle-probe.py v2.1 (engine-calibrated:"
+log "   harness: scripts/needle_probe.py v2.1 (engine-calibrated:"
 log "            sizes to the tokenizer via usage.prompt_tokens; gate number is the"
 log "            ENGINE-confirmed token count, never the estimate)"
 log "   gates:   CORRECT=YES + SIZE_OK=YES (>=97000 engine tokens)"
-NEEDLE=$(python3 scripts/needle-probe.py --port "$PORT" \
+NEEDLE=$(python3 scripts/needle_probe.py --port "$PORT" \
             --target-tokens 97800 --min-prompt-tokens 97000 \
             --salt "verify-97k-$(date -u +%s)" 2>&1)
 echo "$NEEDLE" | tee -a "$OUT"

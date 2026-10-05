@@ -126,7 +126,7 @@ PREFLIGHT_ROOT_GB="${PREFLIGHT_ROOT_GB:-40}"
 PREFLIGHT_PLE_NVME_GB="${PREFLIGHT_PLE_NVME_GB:-100}"
 READY_WAIT="${READY_WAIT_SECONDS:-900}"
 export WEDGE_WATCHDOG_INTERVAL WEDGE_WATCHDOG_RETRIES WEDGE_WATCHDOG_DISABLE \
-       CONTAINER_NAME PORT SERVED_MODEL_NAME PREFLIGHT_XPU_COUNT
+       CONTAINER_NAME PORT SERVED_MODEL_NAME PREFLIGHT_XPU_COUNT LANE_DIR
 
 # When the watchdog itself calls us (restart path via PROD_RESTART_CMD), it
 # sets WEDGE_WATCHDOG_ALREADY_RUNNING=1: never kill or respawn the calling
@@ -277,7 +277,22 @@ fi
 # ---------------------------------------------------------------------------
 # Weights: local-tree identity gate (no HF download — tree lives on the NVMe)
 # ---------------------------------------------------------------------------
-[[ -d "$MODEL_PATH" ]] || err "MODEL_PATH $MODEL_PATH does not exist. One-time bootstrap: python3 scripts/fetch-weights.py (downloads the pinned AWQ checkpoint, builds the snapshot and the INT8 PLE table)."
+# Missing artifacts -> OFFER the one-time bootstrap. Never silent: interactive
+# TTY gets a y/N prompt; --dry-run and non-interactive just print the command
+# (fetch-weights.py has its own sha gates and refuses torn trees anyway).
+if [[ ! -d "$MODEL_PATH" || ! -f "$MODEL_PATH/config.json" || ! -f "$PLE_TABLE_PATH" ]] \
+   || ! ls "$MODEL_PATH"/*.safetensors >/dev/null 2>&1; then
+    info "Weights bootstrap missing (MODEL_PATH=$MODEL_PATH, PLE_TABLE_PATH=$PLE_TABLE_PATH)."
+    info "One-time bootstrap: python3 $SCRIPT_DIR/fetch-weights.py — downloads the pinned AWQ checkpoint, builds the snapshot and the INT8 PLE table (~390 GB, hours; its own env knobs: AWQ_DIR / BF16_DIR / SNAPSHOT_DIR / INT8_PLE_DIR, see the script header)."
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "DRY RUN — would offer to run: python3 $SCRIPT_DIR/fetch-weights.py"
+    elif [[ -t 0 ]] && read -r -p "Run it now? [y/N] " ans && [[ "${ans,,}" == "y" ]]; then
+        python3 "$SCRIPT_DIR/fetch-weights.py" || err "fetch-weights.py failed — see its output above."
+    else
+        err "Weights missing. Run when ready: python3 scripts/fetch-weights.py, then re-run start.sh."
+    fi
+fi
+[[ -d "$MODEL_PATH" ]] || err "MODEL_PATH $MODEL_PATH does not exist (fetch-weights.py did not produce it — check AWQ_DIR/SNAPSHOT_DIR env knobs)."
 [[ -f "$MODEL_PATH/config.json" ]] || err "config.json missing in $MODEL_PATH — wrong or torn weights tree."
 local_shards=$(ls "$MODEL_PATH"/*.safetensors 2>/dev/null | wc -l)
 [[ "$local_shards" -ge 1 ]] || err "no *.safetensors shards in $MODEL_PATH — wrong or torn weights tree."
@@ -309,7 +324,9 @@ ok "PLE table: $PLE_TABLE_PATH ($(du -h "$PLE_TABLE_PATH" | cut -f1))"
 # PRE-BOOT XPU GATE — trivial triton vector-add must compile AND be exact
 # (mandatory standing rule; catches every remaining JIT gap in seconds)
 # ---------------------------------------------------------------------------
-if [[ "$SKIP_XPU_GATE" == "true" ]]; then
+if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] would run XPU gate: PASS expected (triton vector-add on one card; not executed)"
+elif [[ "$SKIP_XPU_GATE" == "true" ]]; then
     info "XPU gate skipped (--launch restart path)."
 elif [[ "$XPU_GATE_DISABLE" == "1" ]]; then
     red "  === XPU GATE DISABLED (XPU_GATE_DISABLE=1) — you own every JIT gap ==="
@@ -333,20 +350,28 @@ fi
 # ---------------------------------------------------------------------------
 docker info >/dev/null 2>&1 || err "docker daemon not reachable (is your user in the docker group?)."
 IMAGE_REF="$IMAGE"
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    info "Image $IMAGE not present — building from the pinned Lumnus commit (scripts/build-image.sh)..."
-    [[ -x "$SCRIPT_DIR/build-image.sh" ]] || err "scripts/build-image.sh missing — cannot build the image of record."
-    "$SCRIPT_DIR/build-image.sh" --tag "$IMAGE"
+if [[ "$DRY_RUN" == "true" ]]; then
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        ok "Image present: $IMAGE_REF"
+    else
+        info "[DRY-RUN] image $IMAGE not present — a real start would build it (scripts/build-image.sh)"
+    fi
+else
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        info "Image $IMAGE not present — building from the pinned Lumnus commit (scripts/build-image.sh)..."
+        [[ -x "$SCRIPT_DIR/build-image.sh" ]] || err "scripts/build-image.sh missing — cannot build the image of record."
+        "$SCRIPT_DIR/build-image.sh" --tag "$IMAGE"
+    fi
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || err "Image $IMAGE still not present after the build attempt."
+    ok "Image present: $IMAGE_REF"
 fi
-docker image inspect "$IMAGE" >/dev/null 2>&1 || err "Image $IMAGE still not present after the build attempt."
-ok "Image present: $IMAGE_REF"
 
 # ---------------------------------------------------------------------------
 # Stop any running instance (validation + preflight already passed).
 # When called BY the watchdog (WD_CALLER=1) the container is already dead —
 # never kill the calling watchdog, or its bounded-retry counter resets.
 # ---------------------------------------------------------------------------
-if [[ "$WD_CALLER" != "1" && -f "$RUN_DIR/watchdog.pid" ]]; then
+if [[ "$DRY_RUN" != "true" && "$WD_CALLER" != "1" && -f "$RUN_DIR/watchdog.pid" ]]; then
     kill "$(cat "$RUN_DIR/watchdog.pid")" 2>/dev/null || true; rm -f "$RUN_DIR/watchdog.pid"
 fi
 if [[ "$DRY_RUN" != "true" ]] && running "$CONTAINER_NAME"; then
@@ -359,6 +384,9 @@ fi
 # ---------------------------------------------------------------------------
 ENV_HASH=$(cat "$LUMNUS_ENV" "$SERVE_ARGS" | grep -v -E '^HF_TOKEN=' | sort | sha256sum | cut -d' ' -f1)
 GIT_DESC=$(git -C "$REPO_DIR" describe --always --dirty 2>/dev/null || echo "no-git")
+# Dry-run writes NOTHING under .run/ (manifest + start.log included) — the
+# docker line printed at the dry-run exit carries the same identity fields.
+if [[ "$DRY_RUN" != "true" ]]; then
 log_to_run "launch start (IMAGE=$IMAGE MODEL=$MODEL_PATH TP=$TENSOR_PARALLEL_SIZE MML=$MAX_MODEL_LEN MNS=$MAX_NUM_SEQS KV_OFFLOAD=$KV_OFFLOADING_SIZE git=$GIT_DESC envhash=$ENV_HASH)"
 cat > "$RUN_DIR/manifest.json" <<EOF
 {
@@ -375,6 +403,7 @@ cat > "$RUN_DIR/manifest.json" <<EOF
 }
 EOF
 ok "Manifest: $RUN_DIR/manifest.json"
+fi
 
 # ---------------------------------------------------------------------------
 # Serve-args splitter: one flag per line, "flag value" split into two array
@@ -400,7 +429,15 @@ DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME"
 for v in ${EXTRA_ENGINE_ENV_VARS:-}; do
     DOCKER_RUN+=(${!v:+-e "$v=${!v}"})
 done
-DOCKER_RUN+=(-v "$LANE_CACHE:$LANE_CACHE"
+# The engine env (lumnus.env) puts EVERY cache path under /cache — HF_HOME,
+# TMPDIR, TRITON_CACHE_DIR, VLLM_CACHE_ROOT, XDG_CACHE_HOME,
+# B70_PLE_INT8_NVME_NATIVE_DIR. The host cache dir therefore mounts AT /cache
+# (production mount of record: <lane>/cache -> /cache), NOT at its own host
+# path — mounting $LANE_CACHE:$LANE_CACHE leaves /cache empty inside and the
+# offline caches (HF_HUB_OFFLINE=1) miss.
+LANE_CACHE_CONTAINER="${LANE_CACHE_CONTAINER:-/cache}"
+mkdir -p "$LANE_CACHE"
+DOCKER_RUN+=(-v "$LANE_CACHE:$LANE_CACHE_CONTAINER"
     -v "$MODEL_PATH:/data/model:ro"
     -v "$PLE_BF16_DIR:/ple/bf16:ro"
     -v "$PLE_INT8_DIR:/ple/int8:ro"
@@ -412,12 +449,15 @@ if [[ -n "${HF_DEVAN_MIRROR:-}" ]]; then
 fi
 SERVE_CONFIG="${SERVE_CONFIG:-$REPO_DIR/serve-config.json}"
 [[ "$SERVE_CONFIG" != /* ]] && SERVE_CONFIG="$REPO_DIR/$SERVE_CONFIG"
+# -f gate: without it docker silently creates an EMPTY DIRECTORY at the host
+# path and mounts it — the container boot-loops on the missing config.
+[[ -f "$SERVE_CONFIG" ]] || err "serve-config.json not found at $SERVE_CONFIG. It ships in the repo root (sha of record c7a2b345927976d911cfd57d1083b71d1a75fee245f61a17b8f126b6717342c8); if genuinely absent, regenerate with: python3 scripts/fetch-weights.py (step 'serve-config' writes + sha-verifies it), or point SERVE_CONFIG in .env at an existing file."
 DOCKER_RUN+=(-v "$SERVE_CONFIG:/opt/b70-flashnext/serve-config.json:ro"
     "$IMAGE"
     vllm serve /data/model "${args[@]}" --kv-offloading-size "$KV_OFFLOADING_SIZE")
 
 if [[ "$DRY_RUN" == "true" ]]; then
-    info "=== DRY RUN — validation + preflight done; printing the docker run line, launching NOTHING ==="
+    info "=== DRY RUN — validation + preflight done (XPU gate not run); printing the docker run line, launching NOTHING ==="
     printf '%q ' "${DOCKER_RUN[@]}" | fold -s -w 100 | sed 's/ $//' | sed 's/$/ \\/' | sed '$ s/ \\$//'
     echo
     ok "Dry run complete — nothing was stopped, spawned, or launched."
@@ -426,15 +466,18 @@ fi
 
 # ---------------------------------------------------------------------------
 # Wedge watchdog (mandatory; double opt-out to disable). Single-instance
-# guard: pgrep by script name — two watchdogs double-probe, double-restart,
-# and race the pidfile.
+# guard is HOST-WIDE BY DESIGN (pgrep by script name): one rig, one serving
+# lane — two watchdogs double-probe, double-restart, and race the pidfile.
+# LANE_DIR separates state dirs, not concurrency.
 # ---------------------------------------------------------------------------
 if [[ "$WD_CALLER" == "1" ]]; then
     info "Restart requested by the running watchdog — leaving it in place (no respawn)."
 elif [[ "$WEDGE_WATCHDOG_DISABLE" != "1" || "$NO_PREFLIGHT" != "true" ]]; then
     info "Spawning wedge watchdog (interval=${WEDGE_WATCHDOG_INTERVAL}s, retries=${WEDGE_WATCHDOG_RETRIES})"
-    if pgrep -f 'wedge-watchdog\.sh$' >/dev/null 2>&1; then
-        info "Wedge watchdog already running - not spawning a second one"
+    WD_PID=""
+    if _existing_wd=$(pgrep -f 'wedge-watchdog\.sh$' 2>/dev/null | head -1) && [[ -n "$_existing_wd" ]]; then
+        info "Wedge watchdog already running (pid $_existing_wd) - not spawning a second one"
+        WD_PID="$_existing_wd"
     else
         [[ -x "$SCRIPT_DIR/wedge-watchdog.sh" ]] || err "scripts/wedge-watchdog.sh missing or not executable (chmod +x scripts/*.sh)."
         # The watchdog's restart interface: start.sh --launch (gate-skipping
@@ -443,9 +486,10 @@ elif [[ "$WEDGE_WATCHDOG_DISABLE" != "1" || "$NO_PREFLIGHT" != "true" ]]; then
         # launched a nonexistent on-box watchdog path silently).
         export PROD_RESTART_CMD="${PROD_RESTART_CMD:-$SCRIPT_DIR/start.sh --launch}"
         nohup "$SCRIPT_DIR/wedge-watchdog.sh" >> "$RUN_DIR/watchdog.log" 2>&1 &
-        echo "$!" > "$RUN_DIR/watchdog.pid"
+        WD_PID=$!
+        echo "$WD_PID" > "$RUN_DIR/watchdog.pid"
     fi
-    ok "Watchdog pid $(cat "$RUN_DIR/watchdog.pid") (log: $RUN_DIR/watchdog.log)"
+    ok "Watchdog pid ${WD_PID:-unknown} (log: $RUN_DIR/watchdog.log)"
 else
     red "  === WEDGE WATCHDOG DISABLED (double opt-out) — the rig WILL wedge unattended within 2-6 h under load ==="
     log_to_run "watchdog disabled (double opt-out)"

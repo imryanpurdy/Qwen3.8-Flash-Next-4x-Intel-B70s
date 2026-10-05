@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # stop.sh — graceful stop: wedge watchdog first, then the vLLM container.
+#           Rollback/devan-fork kit (paired with rollback/devan-fork/start.sh).
 #
 # Order matters (the stop-order contract): TERM the watchdog so it
 # does not "detect a wedge" and restart the server mid-teardown, then `docker

@@ -6,10 +6,10 @@
 # "detect a wedge" and restart the server mid-teardown, then `docker rm -f`
 # the container (graceful: SIGTERM, SIGKILL after the stop timeout).
 #
-# Single-instance note: the watchdog is guarded host-wide (start.sh's pgrep
-# guard allows exactly one per host), so killing by pidfile + the pidfile
-# path sweep below is safe even when several lanes share one tree — each lane
-# owns its own $LANE_DIR/.run/watchdog.pid.
+# Single-instance note: the watchdog is guarded host-wide BY DESIGN (start.sh's
+# pgrep guard allows exactly one per host — one rig, one serving lane), so
+# killing by pidfile + the pidfile path sweep below is safe. LANE_DIR
+# separates state locations only; it does not enable concurrent lanes.
 # ============================================================================
 set -euo pipefail
 

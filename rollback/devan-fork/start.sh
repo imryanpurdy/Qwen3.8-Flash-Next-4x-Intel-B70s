@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
 # start.sh — Qwen3.8-Flash-Next W4A16 on 4x Intel Arc Pro B70 (TP4+EP)
-#            SERVING KIT (verified line)
+#            ROLLBACK / DEVAN-FORK KIT (pre-overhaul verified line, a69fba21).
+#            The PRODUCTION lane launcher is scripts/start.sh — do not use
+#            this one unless docs/operations/rollback.md told you to.
+#            Reuses the repo's docker/gate.py and scripts/wedge-watchdog.sh
+#            via REPO_ROOT; its .env/.run live in this directory.
 #
 # Commands: start | stop | restart | status | logs   (default: start)
 #   ./start.sh              # validate -> preflight -> weights -> XPU gate -> image -> launch
@@ -31,6 +35,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Repo root (this kit lives in rollback/devan-fork/): shared bits —
+# docker/gate.py, scripts/wedge-watchdog.sh — and `git describe` resolve here.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$SCRIPT_DIR"
 
 info() { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
@@ -321,7 +328,7 @@ else
     info "=== Pre-boot XPU gate (triton vector-add on one card) ==="
     command -v docker >/dev/null 2>&1 || err "docker not found."
     GATE_OUT=$(docker run --rm --name qwen38-xpu-gate --device /dev/dri \
-        -v "$SCRIPT_DIR/docker/gate.py:/gate.py:ro" \
+        -v "$REPO_ROOT/docker/gate.py:/gate.py:ro" \
         --entrypoint python3 "$IMAGE_REF" /gate.py 2>&1) \
         || { echo "$GATE_OUT" | tail -5; err "XPU gate failed to run (see above)."; }
     echo "$GATE_OUT" | grep -q "TRITON_XPU_GATE=PASS" \
@@ -345,7 +352,7 @@ fi
 # Manifest
 # ---------------------------------------------------------------------------
 ENV_HASH=$(grep -v -E '^HF_TOKEN=' .env | sort | sha256sum | cut -d' ' -f1)
-GIT_DESC=$(git -C "$SCRIPT_DIR" describe --always --dirty 2>/dev/null || echo "no-git")
+GIT_DESC=$(git -C "$REPO_ROOT" describe --always --dirty 2>/dev/null || echo "no-git")
 log_to_run "launch start (IMAGE=$IMAGE MODEL=$MODEL_PATH TP=$TENSOR_PARALLEL_SIZE MML=$MAX_MODEL_LEN MNS=$MAX_NUM_SEQS git=$GIT_DESC envhash=$ENV_HASH)"
 cat > .run/manifest.json <<EOF
 {
@@ -373,13 +380,19 @@ if [[ "$WD_CALLER" == "1" ]]; then
 # ---------------------------------------------------------------------------
 elif [[ "$WEDGE_WATCHDOG_DISABLE" != "1" || "$NO_PREFLIGHT" != "true" ]]; then
     info "Spawning wedge watchdog (interval=${WEDGE_WATCHDOG_INTERVAL}s, retries=${WEDGE_WATCHDOG_RETRIES})"
-    if pgrep -f "wedge-watchdog\\.sh" >/dev/null 2>&1; then
-        info "Wedge watchdog already running - not spawning a second one"
+    WD_PID=""
+    if _existing_wd=$(pgrep -f "wedge-watchdog\\.sh" 2>/dev/null | head -1) && [[ -n "$_existing_wd" ]]; then
+        info "Wedge watchdog already running (pid $_existing_wd) - not spawning a second one"
+        WD_PID="$_existing_wd"
     else
-        nohup "$SCRIPT_DIR/scripts/wedge-watchdog.sh" >> .run/watchdog.log 2>&1 &
-        echo "$!" > .run/watchdog.pid
+        # Restart THIS kit, never the production scripts/start.sh (the shared
+        # watchdog defaults its restart to its own dir's start.sh otherwise).
+        export ESLANE_RESTART_CMD="$SCRIPT_DIR/start.sh --launch"
+        nohup "$REPO_ROOT/scripts/wedge-watchdog.sh" >> .run/watchdog.log 2>&1 &
+        WD_PID=$!
+        echo "$WD_PID" > .run/watchdog.pid
     fi
-    ok "Watchdog pid $(cat .run/watchdog.pid) (log: .run/watchdog.log)"
+    ok "Watchdog pid ${WD_PID:-unknown} (log: .run/watchdog.log)"
 else
     red "  === WEDGE WATCHDOG DISABLED (double opt-out) — the server WILL wedge unattended within 2-6 h under load ==="
     log_to_run "watchdog disabled (double opt-out)"
