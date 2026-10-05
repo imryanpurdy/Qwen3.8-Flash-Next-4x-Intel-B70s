@@ -23,9 +23,11 @@
 #   - boot grace: the lane boots in ~4-5 min. The same cold-load guard
 #     applies — no stall counting until /v1/models answers once — so no
 #     separate grace constant is needed.
-#   - restart command: PROD_RESTART_CMD (default: "$SCRIPT_DIR/start.sh"
-#     --launch; start.sh exports exactly this name when it spawns the
-#     watchdog). ESLANE_RESTART_CMD is accepted as a deprecated alias.
+#   - restart command: PROD_RESTART_CMD (default:
+#     "$SCRIPT_DIR/start.sh --launch --replace" — launch-only, skips the XPU
+#     gate; --replace lets the restart stop the wedged container. start.sh
+#     exports exactly this name when it spawns the watchdog).
+#     ESLANE_RESTART_CMD is accepted as a deprecated alias.
 #     ON-BOX DEPLOY NOTE: the deploy directory carries its own copy
 #     (acceptance-v2 pattern). Restore scripts MUST use the deploy-dir
 #     watchdog path, NOT <watchdog-path-in-operator-home> — that path does not
@@ -88,7 +90,7 @@ LIVENESS_CMD="${LIVENESS_CMD:-}"
 # deprecated alias (old side-lane deployments). Fallback resolves to
 # scripts/start.sh (this script's own dir), NOT ../start.sh — the deploy-dir
 # path trap (a restore once launched a nonexistent on-box path silently).
-RESTART_CMD="${PROD_RESTART_CMD:-${ESLANE_RESTART_CMD:-$SCRIPT_DIR/start.sh --launch}}"
+RESTART_CMD="${PROD_RESTART_CMD:-${ESLANE_RESTART_CMD:-$SCRIPT_DIR/start.sh --launch --replace}}"
 
 # State lives in the LANE's .run/ — same derivation as start.sh/status.sh/
 # stop.sh (LANE_DIR default = repo root = this script's parent), so

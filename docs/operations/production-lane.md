@@ -69,7 +69,7 @@ pre-Lumnus production stack — devan fork + wtdcode AWQ checkpoint at MNS 32
 Other subcommands: `stop`, `restart` (full validation path, then stop+start),
 `status`, `logs` (`docker logs -f`). `--launch` = launch-only, skips the XPU
 gate — this is the watchdog's restart interface (`PROD_RESTART_CMD`, default
-`<lane>/start.sh --launch`).
+`<lane>/start.sh --launch --replace`).
 
 ## Stop / start procedure
 
@@ -136,7 +136,7 @@ Loop (interval 60 s, `.env`):
    TP worker / EngineCore (via `docker top`, `sudo -n py-spy dump`) + top-TID
    CPU table, into `.run/wedge-<ts>.log`. Then kill the container process
    group and `docker rm -f`.
-9. **Restart**: via `PROD_RESTART_CMD` (default `<lane>/start.sh --launch`),
+9. **Restart**: via `PROD_RESTART_CMD` (default `<lane>/start.sh --launch --replace`),
    **bounded to 3 retries** (`WEDGE_WATCHDOG_RETRIES`); after that it gives up
    loudly and exits — a human takes over; evidence in `.run/wedge-*.log`.
 10. **Single instance (host-wide, by design)**: `start.sh` will not spawn a

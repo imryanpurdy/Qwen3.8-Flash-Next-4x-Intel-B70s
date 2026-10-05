@@ -16,6 +16,16 @@
 #   ./scripts/start.sh --no-preflight  # skip the preflight gate (loud WARN)
 #   ./scripts/start.sh --dry-run     # validate + preflight + print the exact
 #                                    # docker run line, launch NOTHING (clean-room diff)
+#   ./scripts/start.sh --replace     # allow stopping a RUNNING container
+#                                    # (required for any stop of a live lane)
+#
+# GUARD RAILS (the 2026-10-05 incident law):
+#   - A DRY_RUN environment variable is a HARD ERROR: the dry-run switch is
+#     the --dry-run flag ONLY (an env var of this name is silently ignored by
+#     some toolchains; here it refuses so a typo'd intent can never launch).
+#   - start.sh NEVER stops a running production container unless --replace is
+#     given explicitly. The watchdog (--launch) and the systemd unit pass
+#     --replace; a plain start while the lane is up is refused.
 #
 # The verified line (trial-proven, promoted 2026-10-04):
 #   Lumnus b70-flash-next engine (vLLM v0.30.0 + series 0001-0019), wtdcode
@@ -49,17 +59,27 @@ warn() { echo -e "\033[1;33m[WARN]\033[0m  $*"; }
 err()  { echo -e "\033[1;31m[ERR ]\033[0m  $*"; exit 1; }
 red()  { echo -e "\033[1;31m$*\033[0m"; }
 
+# HARD ERROR: DRY_RUN as an environment variable. The dry-run switch is the
+# --dry-run flag ONLY (2026-10-05: DRY_RUN=true was silently ignored and a
+# "dry-run" attempt launched production). Refuse loudly instead. This check
+# MUST run before DRY_RUN is initialized as a local variable below.
+if [[ -n "${DRY_RUN:-}" ]]; then
+    err "DRY_RUN environment variable detected (value: '$DRY_RUN'). Dry-run is the --dry-run FLAG, not an env var — refusing. Re-run with --dry-run."
+fi
+
 CMD="start"
 NO_PREFLIGHT=false
 SKIP_XPU_GATE=false
 DRY_RUN=false
+REPLACE=false
 for arg in "$@"; do
     case "$arg" in
         start|stop|restart|status|logs) CMD="$arg" ;;
         --no-preflight) NO_PREFLIGHT=true ;;
         --launch) SKIP_XPU_GATE=true ;;        # watchdog restart path
+        --replace) REPLACE=true ;;             # explicit permission to stop a running container
         --dry-run) DRY_RUN=true ;;             # print the docker line, launch nothing
-        -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) err "Unknown argument: $arg (try --help)" ;;
     esac
 done
@@ -132,7 +152,8 @@ export WEDGE_WATCHDOG_INTERVAL WEDGE_WATCHDOG_RETRIES WEDGE_WATCHDOG_DISABLE \
 # sets WEDGE_WATCHDOG_ALREADY_RUNNING=1: never kill or respawn the calling
 # watchdog, or its bounded-retry counter resets.
 WD_CALLER="${WEDGE_WATCHDOG_ALREADY_RUNNING:-0}"
-trap 'rc=$?; if [[ "$rc" -ne 0 && "$CMD" != "stop" && "$WD_CALLER" != "1" && -f "$RUN_DIR/watchdog.pid" ]]; then kill "$(cat "$RUN_DIR/watchdog.pid")" 2>/dev/null || true; fi; exit "$rc"' EXIT
+trap 'rc=$?; if [[ "$rc" -ne 0 && "$CMD" != "stop" && "$WD_CALLER" != "1" && -f "$RUN_DIR/watchdog.pid" ]]; then _wdpid="$(cat "$RUN_DIR/watchdog.pid" 2>/dev/null || true)"; # only kill a watchdog we actually replaced/orphaned: if the container is still running, the watchdog is NOT ours to kill (it belongs to the live lane); with --replace the watchdog was already stopped above; without a running container the pidfile watchdog would be orphaned, so kill it.
+        if [[ -n "$_wdpid" ]] && ! docker ps --format "{{.Names}}" 2>/dev/null | grep -qx "$CONTAINER_NAME"; then kill "$_wdpid" 2>/dev/null || true; fi; fi; exit "$rc"' EXIT
 
 running() { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
 
@@ -369,15 +390,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Stop any running instance (validation + preflight already passed).
+# Stop any running instance — ONLY with explicit --replace (2026-10-05 law).
+# A plain start must NEVER stop a live production container: it refuses with
+# an error instead. The watchdog restart path (WD_CALLER=1, container already
+# dead) and the systemd unit pass --replace explicitly.
 # When called BY the watchdog (WD_CALLER=1) the container is already dead —
 # never kill the calling watchdog, or its bounded-retry counter resets.
 # ---------------------------------------------------------------------------
 if [[ "$DRY_RUN" != "true" && "$WD_CALLER" != "1" && -f "$RUN_DIR/watchdog.pid" ]]; then
-    kill "$(cat "$RUN_DIR/watchdog.pid")" 2>/dev/null || true; rm -f "$RUN_DIR/watchdog.pid"
+    if [[ "$REPLACE" == "true" ]]; then
+        kill "$(cat "$RUN_DIR/watchdog.pid")" 2>/dev/null || true; rm -f "$RUN_DIR/watchdog.pid"
+    else
+        # --replace not given: leave the running watchdog alone (do NOT kill it —
+        # a plain start refusing later must not have taken the watchdog down).
+        :
+    fi
 fi
 if [[ "$DRY_RUN" != "true" ]] && running "$CONTAINER_NAME"; then
-    info "Stopping existing container $CONTAINER_NAME"
+    if [[ "$REPLACE" != "true" && "$WD_CALLER" != "1" ]]; then
+        err "REFUSING: container '$CONTAINER_NAME' is already running and --replace was not given.\n  A start never stops a live production lane (2026-10-05 incident).\n  To replace it deliberately: ./scripts/start.sh --replace\n  To stop it:                ./scripts/stop.sh"
+    fi
+    info "Stopping existing container $CONTAINER_NAME (--replace)"
     docker rm -f "$CONTAINER_NAME" >/dev/null
 fi
 
@@ -497,7 +530,7 @@ elif [[ "$WEDGE_WATCHDOG_DISABLE" != "1" || "$NO_PREFLIGHT" != "true" ]]; then
         # fast path). Export it so the watchdog uses THIS start.sh, not its
         # own relative default — the deploy-dir path trap (a restore once
         # launched a nonexistent on-box watchdog path silently).
-        export PROD_RESTART_CMD="${PROD_RESTART_CMD:-$SCRIPT_DIR/start.sh --launch}"
+        export PROD_RESTART_CMD="${PROD_RESTART_CMD:-$SCRIPT_DIR/start.sh --launch --replace}"
         nohup "$SCRIPT_DIR/wedge-watchdog.sh" >> "$RUN_DIR/watchdog.log" 2>&1 &
         WD_PID=$!
         echo "$WD_PID" > "$RUN_DIR/watchdog.pid"

@@ -55,7 +55,7 @@ cd ~/qwen-prod && ./scripts/start.sh
 ./tests/verify.sh
 
 # 7. Confirm the watchdog's restart command points at the NEW path:
-grep PROD_RESTART_CMD .run/watchdog.log          # expect: .../qwen-prod/scripts/start.sh --launch
+grep PROD_RESTART_CMD .run/watchdog.log          # expect: .../qwen-prod/scripts/start.sh --launch --replace
 #    (start.sh exports PROD_RESTART_CMD="$SCRIPT_DIR/start.sh --launch" with
 #    SCRIPT_DIR = the new lane; the watchdog log echoes it on startup.)
 
