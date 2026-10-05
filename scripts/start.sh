@@ -450,9 +450,14 @@ DOCKER_RUN+=(-v "$LANE_CACHE:$LANE_CACHE_CONTAINER"
     -v "$PLE_BF16_DIR:/ple/bf16:ro"
     -v "$PLE_INT8_DIR:/ple/int8:ro"
     -v "$AWQ_ORIG_DIR:/data-awq:ro")
-# Optional: the BF16 tree's parent dir (snapshot PLE symlink resolution +
-# cross-check tools). Production mounts the parent; set HF_DEVAN_MIRROR to it.
-if [[ -n "${HF_DEVAN_MIRROR:-}" ]]; then
+# The BF16 tree's parent dir (snapshot PLE symlink resolution + cross-check
+# tools). Default: the parent of PLE_BF16_DIR — the snapshot's PLE symlink is
+# absolute (../../srv/...) and dangles inside the container unless the parent
+# path is mounted at the same path. Set HF_DEVAN_MIRROR explicitly to override.
+if [[ -z "${HF_DEVAN_MIRROR:-}" ]]; then
+    HF_DEVAN_MIRROR="$(dirname "$PLE_BF16_DIR")"
+fi
+if [[ -n "$HF_DEVAN_MIRROR" && "$HF_DEVAN_MIRROR" != "/" ]]; then
     DOCKER_RUN+=(-v "$HF_DEVAN_MIRROR:$HF_DEVAN_MIRROR:ro")
 fi
 SERVE_CONFIG="${SERVE_CONFIG:-$REPO_DIR/serve-config.json}"
