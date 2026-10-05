@@ -94,6 +94,14 @@ RESTART_CMD="${PROD_RESTART_CMD:-${ESLANE_RESTART_CMD:-$SCRIPT_DIR/start.sh --la
 # stop.sh (LANE_DIR default = repo root = this script's parent), so
 # status.sh tails this log and stop.sh's "wedge evidence" glob finds the
 # captures. (Was: $SCRIPT_DIR/.run/eslane — invisible to both.)
+# .env contract: when spawned by start.sh, CONTAINER_NAME/PORT/SERVED_MODEL_NAME
+# arrive via the exported environment. A bare manual run picks up the lane's
+# .env here (same vars start.sh reads) — no silent desync from the lane.
+if [[ -z "$WD_STATE_CMD" ]]; then   # stub test drives its own env — never source .env under test hooks
+    for _env_file in "${LANE_DIR:-$SCRIPT_DIR/..}/.env" "$SCRIPT_DIR/../.env"; do
+        [[ -f "$_env_file" ]] && { set -a; . "$_env_file"; set +a; break; }
+    done
+fi
 RUN_DIR="${LANE_DIR:-$SCRIPT_DIR/..}/.run"
 WATCHDOG_LOG="$RUN_DIR/watchdog.log"
 mkdir -p "$RUN_DIR"
