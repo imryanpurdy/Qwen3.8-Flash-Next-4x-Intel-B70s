@@ -119,8 +119,12 @@ except Exception:
 PYM
 )
 log "   32x600 sustained: median r2..r15 = $SF_MED tok/s (harness mean $SF_SUS; spread $SF_MIN-$SF_MAX)"
-gate "32x600 sustained median within 10% of 1,038.3 (band 934.5-1142.1)" \
-     "$(python3 -c "print(0 if 934.5 <= float('${SF_MED:-0}') <= 1142.1 else 1)")"
+# Reference of record: the Lumnus trial line's own measured n32 (1,118.4; README
+# Results). The old 1,038.3 anchor was the Sept devan-fork W4A16 MNS-32 point —
+# a different engine+checkpoint line. Band = ±10 % of 1,118.4 = 1,006.6–1,230.2.
+# A fresh-clone relaunch measured median 1,151.7 (mean 1,141.1) — inside.
+gate "32x600 sustained median within 10% of 1,118.4 (band 1006.6-1230.2)" \
+     "$(python3 -c "print(0 if 1006.6 <= float('${SF_MED:-0}') <= 1230.2 else 1)")"
 gate "soak clean (0 errors, post-check OK)" "$([[ "${SF_CLEAN:-NO}" == "YES" ]] && echo 0 || echo 1)"
 hr
 
