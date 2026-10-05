@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# ============================================================================
+# b70-lumnus-prod.service — systemd template for the production lane.
+#
+# Runs scripts/start.sh (full gate path) after docker is up, on boot and on
+# demand. The launcher itself owns every gate (preflight, weights identity,
+# XPU gate, image gate, READY receipt) and spawns the wedge watchdog; this
+# unit only sequences it behind docker and restarts on failure with backoff.
+#
+# Install: sudo ./scripts/install-systemd.sh   (see that script for details)
+# Status : systemctl status b70-lumnus-prod
+# Logs   : journalctl -u b70-lumnus-prod -f   (and scripts/status.sh)
+# Stop   : systemctl stop b70-lumnus-prod      (runs scripts/stop.sh: watchdog
+#                                               first, then the container)
+#
+# Notes:
+# - ExecStop uses the stop path with a generous timeout: a graceful watchdog
+#   TERM + container rm normally takes seconds; TimeoutStopSec covers a slow
+#   docker teardown.
+# - Restart=on-failure + StartLimitBurst=3 mirrors the watchdog's bounded
+#   retry philosophy: three failed full starts, then give up loudly.
+#   (Runtime wedge recovery is the watchdog's job; this unit only covers
+#   start-time failure.)
+# - The unit is Type=oneshot with RemainAfterExit=yes: start.sh blocks until
+#   READY (~4-5 min), then exits 0. "systemctl is-active" tracks the lane's
+#   launched-or-not state; liveness itself is the watchdog's job.
+# - LANE_DIR is NOT set here: the unit assumes the repo checkout IS the lane
+#   root (WorkingDirectory). The watchdog's restart command resolves to the
+#   same checkout (PROD_RESTART_CMD default <repo>/scripts/start.sh --launch).
+# ============================================================================
+
+[Unit]
+Description=Qwen3.8-Flash-Next production lane (Lumnus b70-flash-next, 4x Intel B70)
+Documentation=file://%REPO_ROOT%/docs/operations/production-lane.md
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=%USER%
+Group=%USER%
+WorkingDirectory=%REPO_ROOT%
+ExecStart=%REPO_ROOT%/scripts/start.sh
+ExecStop=%REPO_ROOT%/scripts/stop.sh
+TimeoutStartSec=1200
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=30
+# A failed full start retries up to 3 times (matches the watchdog's retry
+# philosophy); then the unit fails loudly and stays down.
+StartLimitBurst=3
+StartLimitIntervalSec=600
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=b70-lumnus-prod
+
+[Install]
+WantedBy=multi-user.target

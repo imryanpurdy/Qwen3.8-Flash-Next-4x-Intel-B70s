@@ -28,8 +28,9 @@ Engine of record: Lumnus b70-flash-next (vLLM v0.30.0 + Lumnus patch series
 0001–0019 — sub-lettered, 21 files; see `docs/engine/PROVENANCE.md`), image `b70-lumnus-trial:v1` (local build of record), wtdcode AWQ
 W4A16 checkpoint, INT8 PLE n-gram table served from NVMe (patch 0013 native
 reader), TP4 + expert-parallel, MML 262144, MNS 32, 64 GiB CPU KV-offload tier.
-Rollback lane (separate deploy directory, see `rollback.md`): the prior
-es-lane stack, image pinned by digest.
+Rollback lane (separate deploy directory, see `rollback.md`): the last-known-good
+pre-Lumnus production stack — devan fork + wtdcode AWQ checkpoint at MNS 32
+(rig: `~/mns32-lane/`), image pinned by digest.
 
 ## One-command start contract
 
