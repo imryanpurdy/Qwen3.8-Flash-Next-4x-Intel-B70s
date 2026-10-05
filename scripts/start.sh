@@ -97,8 +97,8 @@ is_posint "$KV_OFFLOADING_SIZE" \
 # Relative paths resolve against the repo root (production convention).
 [[ "$SERVE_ARGS" != /* ]] && SERVE_ARGS="$REPO_DIR/$SERVE_ARGS"
 [[ "$LUMNUS_ENV" != /* ]] && LUMNUS_ENV="$REPO_DIR/$LUMNUS_ENV"
-[[ -f "$SERVE_ARGS" ]] || err "serve args: --max-model-len missing/invalid (SERVE_ARGS file not found: $SERVE_ARGS)"
-[[ -f "$LUMNUS_ENV" ]] || err "LUMNUS_ENV file not found: $LUMNUS_ENV"
+[[ -f "$SERVE_ARGS" ]] || err "SERVE_ARGS file not found: $SERVE_ARGS. If you just cloned: cp serve-args <name> and point SERVE_ARGS at it (see .env.example)."
+[[ -f "$LUMNUS_ENV" ]] || err "LUMNUS_ENV file not found: $LUMNUS_ENV. If you just cloned: cp lumnus.env.example lumnus.env (see .env.example)."
 SERVE_MML=$(grep -oE '^--max-model-len [0-9]+' "$SERVE_ARGS" | awk '{print $2}')
 SERVE_MNS=$(grep -oE '^--max-num-seqs [0-9]+'  "$SERVE_ARGS" | awk '{print $2}')
 SERVE_TP=$(grep -oE '^--tensor-parallel-size [0-9]+' "$SERVE_ARGS" | awk '{print $2}')
@@ -289,8 +289,18 @@ if [[ -L "$PLE_TABLE_PATH" ]] && [[ ! -e "$PLE_TABLE_PATH" ]]; then
     err "PLE_TABLE_PATH is a dangling symlink ($PLE_TABLE_PATH -> $(readlink "$PLE_TABLE_PATH")). The snapshot's PLE symlink must resolve on the host; check the BF16 tree mount (PLE_BF16_DIR / HF_DEVAN_MIRROR in .env)."
 fi
 # HF cache snapshots are symlink forests — they dangle inside the container mount.
+# The awq_snapshot.py snapshot itself is ALSO a symlink forest, but its links are
+# relative and anchored one level up (../../data-awq/...), which resolve on the
+# host AND inside the container when the parent of both trees is mounted
+# (HF_DEVAN_MIRROR / the /data parent in production). Distinguish the two: a
+# symlinked shard is broken ONLY if its target does not resolve on this host.
 if find "$MODEL_PATH" -maxdepth 1 -type l -name '*.safetensors' | grep -q .; then
-    err "MODEL_PATH contains symlinked shards (a Hugging Face cache snapshot). They dangle inside the container mount. Download with --local-dir instead (README — Weights)."
+    broken=0
+    while IFS= read -r -d '' link; do
+        [[ -e "$link" ]] || { err "Broken shard symlink: $link -> $(readlink "$link") (HF cache snapshots dangle inside the container mount; download with --local-dir — README — Weights)."; broken=1; }
+    done < <(find "$MODEL_PATH" -maxdepth 1 -type l -name '*.safetensors' -print0)
+    [[ "$broken" == "0" ]] || exit 1
+    info "MODEL_PATH is a snapshot symlink forest (relative links resolve on the host — awq_snapshot.py layout)."
 fi
 ok "Weights tree: $MODEL_PATH (${local_shards} shards)"
 ok "PLE table: $PLE_TABLE_PATH ($(du -h "$PLE_TABLE_PATH" | cut -f1))"
