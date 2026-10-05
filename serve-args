@@ -1,0 +1,36 @@
+# serve-args — production serve flags (one flag per line; "flag value" may share a line).
+# Values with spaces (JSON blobs) must stay on one line: the serve-args splitter
+# in scripts/start.sh splits "flag value" into exactly two entries.
+#
+# Gates enforced by start.sh from this file: --tensor-parallel-size must be 4
+# (2 KV heads — TP6/TP3 impossible), --max-model-len <= 262144, --max-num-seqs <= 32.
+#
+# Notes:
+# - Power-of-two cudagraph capture sizes only ([1,2,4,8,16,32,256,512,1024]):
+#   non-power-of-two capture sizes trigger NaN "duct" loops on this engine.
+# - NO --speculative-config / MTP flags: MTP NaN-poisons the engine with >=3
+#   concurrent requests (Lumnus known-issues item 6).
+# - The sampler pin is the Qwen model-card instruct set (restored 2026-10-05;
+#   rationale in docs/operations/production-lane.md). Requests carrying their
+#   own sampling params override it.
+# - --kv-offloading-size is appended by scripts/start.sh from
+#   KV_OFFLOADING_SIZE in .env — do not add it here.
+--served-model-name qwen-256k
+--host 0.0.0.0
+--port 8022
+--dtype bfloat16
+--tensor-parallel-size 4
+--enable-expert-parallel
+--trust-remote-code
+--gpu-memory-utilization 0.85
+--max-model-len 262144
+--max-num-batched-tokens 1024
+--max-num-seqs 32
+--limit-mm-per-prompt {"image":2,"video":0}
+--compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,4,8,16,32,256,512,1024]}
+--cudagraph-metrics
+--enable-auto-tool-choice
+--tool-call-parser qwen3_xml
+--reasoning-parser qwen3
+--override-generation-config {"temperature": 0.7, "top_p": 0.80, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0}
+--kv-offloading-backend native

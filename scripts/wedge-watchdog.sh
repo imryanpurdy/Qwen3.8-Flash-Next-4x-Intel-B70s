@@ -1,11 +1,31 @@
 #!/usr/bin/env bash
 # ============================================================================
-# wedge-watchdog.sh — Xe2 Level-Zero wedge watchdog
+# wedge-watchdog-eslane.sh — side-lane (es-lane) wedge watchdog
+# Adapted from wedge-watchdog.sh (production, md5 3b7f1384). DIFF DISCIPLINE:
+# every changed line is one of — container name, port, served model id, log
+# source (docker logs instead of repo .run/server.log), restart command
+# (start.sh --launch kept as the interface), boot-grace comment, or a comment.
+# Nothing else differs. The Xe2 Level-Zero wedge signatures are UNCHANGED
+# (same silicon, same Level Zero stack).
 #
 # The Xe2 Level-Zero wedge kills the serving job every 2-6 h under load
 # (kernel signature: "Engine reset: engine_class=ccs|bcs",
 #  "Fault response: Unsuccessful", "guc_exec_queue_timedout_job"). Only a
 # container restart recovers; in-flight requests are lost.
+#
+# Differences from the production watchdog (all intentional):
+#   - container es-lane, port 8022, served id qwen-256k
+#   - engine log source is `docker logs es-lane` (the side lane has no host
+#     log-tail follower); log_size/log_tail read the container log directly
+#     (bounded: last 2000 lines / last 200 lines)
+#   - boot grace: es-lane boots in ~4-5 min (vs ~8-9 production). The same
+#     cold-load guard applies — no stall counting until /v1/models answers
+#     once — so no separate grace constant is needed.
+#   - restart command: ESLANE_RESTART_CMD (default: "$SCRIPT_DIR/start.sh"
+#     --launch). ON-BOX DEPLOY NOTE: the deploy directory carries its own
+#     copy (acceptance-v2 pattern). Restore scripts MUST use the deploy-dir
+#     watchdog path, NOT <watchdog-path-in-operator-home> — that path does not
+#     exist and a restore launched it silently today (ledger-corrected).
 #
 # Liveness = GEN-PROBE. A 1-token chat completion proves the executor
 # actually advances (a wedged engine can hold /v1/models up). On wedge
@@ -14,11 +34,11 @@
 # the container group, restarts via the restart command (bounded retries,
 # default 3), gives up LOUDLY after WEDGE_WATCHDOG_RETRIES.
 #
-# DISABLE (double opt-out, non-negotiable):
-# WEDGE_WATCHDOG_DISABLE=1 AND --no-preflight (PREFLIGHT_SKIPPED=1) together.
+# DISABLE (double opt-out, non-negotiable, same as production):
+# WEDGE_WATCHDOG_DISABLE=1 AND PREFLIGHT_SKIPPED=1 together.
 #
-# State lives under .run/ in this repo only (watchdog.log,
-# wedge-<ts>.log). Design notes: scripts/watchdog.md
+# State lives under .run/ in this repo only (watchdog-eslane.log,
+# wedge-<ts>.log).
 # ============================================================================
 set -euo pipefail
 
@@ -38,7 +58,7 @@ if [[ "$WEDGE_WATCHDOG_DISABLE" == "1" && "$PREFLIGHT_SKIPPED" == "1" ]]; then
     red "  =================================================================="
     red "   WEDGE WATCHDOG NOT RUNNING (WEDGE_WATCHDOG_DISABLE=1 + --no-preflight)"
     red "  =================================================================="
-    red "   The server WILL wedge unattended within 2-6 h under load. Xe2 Level-Zero"
+    red "   The rig WILL wedge unattended within 2-6 h under load. Xe2 Level-Zero"
     red "   wedge signature: 'Engine reset: engine_class=ccs|bcs', 'Fault response:"
     red "   Unsuccessful', 'guc_exec_queue_timedout_job'. Only a container"
     red "   restart recovers; in-flight requests are lost. A human must watch it."
@@ -51,15 +71,15 @@ fi
 
 INTERVAL="${WEDGE_WATCHDOG_INTERVAL:-60}"
 RETRIES="${WEDGE_WATCHDOG_RETRIES:-3}"
-CONTAINER_NAME="${CONTAINER_NAME:-qwen38-flash-next}"
+CONTAINER_NAME="${CONTAINER_NAME:-es-lane}"
 PORT="${PORT:-8022}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen-256k}"
 PREFLIGHT_XPU_COUNT="${PREFLIGHT_XPU_COUNT:-4}"
 STALL_LIMIT=3
-RESTART_CMD="${WEDGE_RESTART_CMD:-$SCRIPT_DIR/../start.sh --launch}"
+RESTART_CMD="${ESLANE_RESTART_CMD:-$SCRIPT_DIR/../start.sh --launch}"
 
-RUN_DIR="$SCRIPT_DIR/../.run"   # repo-root .run/ (shared with start.sh/stop.sh)
-WATCHDOG_LOG="$RUN_DIR/watchdog.log"
+RUN_DIR="$SCRIPT_DIR/.run/eslane"
+WATCHDOG_LOG="$RUN_DIR/watchdog-eslane.log"
 mkdir -p "$RUN_DIR"
 
 device_count() {
@@ -93,8 +113,8 @@ health_ok() {
 }
 
 gen_probe_ok() {
-    # Executor liveness — 1 token must actually generate. Answers in seconds
-    # when healthy (MML 262144, admission open).
+    # Executor liveness — 1 token must actually generate. es-lane answers in
+    # seconds when healthy (MML 262144, admission open).
     if command -v curl >/dev/null 2>&1; then
         curl -fsS -m 60 -X POST "http://localhost:$PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
@@ -104,7 +124,41 @@ gen_probe_ok() {
 
 log_size() {
     # Bounded container-log size (last 2000 lines) — proxy for "log advanced".
-    docker logs --tail 2000 "$CONTAINER_NAME" 2>/dev/null | wc -c || echo 0
+    # Numeric-only: docker CLI failure text (multi-line) must never reach the
+    # -gt comparison (2026-10-03 line-215 "[[: 0\n0: syntax error" crash).
+    _ls=$(docker logs --tail 2000 "$CONTAINER_NAME" 2>/dev/null | wc -c | tr -cd '0-9')
+    echo "${_ls:-0}"
+}
+
+metrics_sample() {
+    # Summed vLLM counters: running requests, generated tokens, prefilled tokens.
+    curl -fsS -m 8 "http://localhost:$PORT/metrics" 2>/dev/null | awk '
+        /^vllm:num_requests_running/ {r+=$NF}
+        /^vllm:generation_tokens_total/ {g+=$NF}
+        /^vllm:prompt_tokens_total/ {p+=$NF}
+        END {printf "%d %d %d\n", r+0, g+0, p+0}'
+}
+
+engine_progressing() {
+    # Load-aware gate (2026-10-03): the watchdog bounced a healthy engine saturated by
+    # 8x~120K/200K-token prefills - every gen-probe queued out past its 60s window and
+    # log_size is constant once the log exceeds the 2000-line tail, so stalls accumulated
+    # into a restart. Under load a 1-token probe is NOT liveness evidence. Two /metrics
+    # samples LOAD_SAMPLE_S apart: requests running AND either counter advanced =
+    # busy, not wedged. Prompt tokens count as progress: a long prefill generates
+    # ZERO output tokens for minutes, so the generation counter alone misreads a
+    # busy engine as wedged (2026-10-03 23:53Z restart was that, not a real wedge).
+    # Fail-open: metrics unavailable -> this path never restarts.
+    local s1 s2
+    s1=$(metrics_sample) || return 0
+    sleep "${LOAD_SAMPLE_S:-30}"
+    s2=$(metrics_sample) || return 0
+    read -r r1 g1 p1 <<<"$s1"
+    read -r r2 g2 p2 <<<"$s2"
+    info "load-guard samples: s1=["$s1"] s2=["$s2"] (running gen prompt)"
+    [[ "${r2:-0}" -gt 0 ]] || return 1
+    [[ "${g2:-0}" -gt "${g1:-0}" || "${p2:-0}" -gt "${p1:-0}" ]] && return 0
+    return 1
 }
 
 log_tail() {
@@ -174,11 +228,16 @@ ever_running=false
 ready_once=false   # cold-load guard: no stall counting until /v1/models answers once
 last_log_size=$(log_size)
 
-info "Wedge watchdog starting: interval=${INTERVAL}s retries=${RETRIES} container=$CONTAINER_NAME port=$PORT model=$SERVED_MODEL_NAME"
+info "Wedge watchdog (es-lane) starting: interval=${INTERVAL}s retries=${RETRIES} container=$CONTAINER_NAME port=$PORT model=$SERVED_MODEL_NAME"
 ok "Watchdog live. Liveness = gen-probe (1-token completion). Restart via: $RESTART_CMD (max ${RETRIES}x). py-spy captures before any restart." | tee -a "$WATCHDOG_LOG"
 
 while :; do
     sleep "$INTERVAL"
+    # xe engine-reset monitor: log dmesg "Engine reset" count each cycle
+    _rc_total=$(sudo -n dmesg 2>/dev/null | grep -acE "Engine reset" || true)
+    _rc_total=${_rc_total:-0}
+    info "xe engine resets: total=$_rc_total new_this_cycle=$(( _rc_total - ${_rc_last:-0} ))"
+    _rc_last=$_rc_total
 
     if container_running; then
         ever_running=true
@@ -270,6 +329,12 @@ while :; do
 
     if [[ "$ready_once" != "true" ]]; then
         warn "[$(date -u +%H:%M:%SZ)] pre-READY hold: models endpoint has not answered yet - stall NOT counted (cold-load guard)"
+        continue
+    fi
+    if engine_progressing; then
+        warn "[$(date -u +%H:%M:%SZ)] probe failed but engine is busy (requests running, tokens advancing) - stall NOT counted (load guard)"
+        stall_count=0
+        last_log_size=$(log_size)
         continue
     fi
     stall_count=$((stall_count + 1))

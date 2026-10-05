@@ -1,134 +1,146 @@
 # Qwen3.8-Flash-Next on 4x Intel Arc Pro B70
 
-Serving kit for **Qwen3.8-Flash-Next W4A16** on **4x Intel Arc Pro B70 32GB, TP4+EP**: vLLM fork `devan-carlin/vllm@xpu-qwen4exp` (a69fba21) built on `intel/omix:0.4.0-devel-ubuntu24.04`, **262144 context**, decode graphs, kv fp8, qwen3/qwen3_xml parsers.
+Serving kit for **Qwen3.8-Flash-Next AWQ W4A16** (`wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16` @ `0939125`) on **4x Intel Arc Pro B70 32GB, TP4+EP**, served by the **Lumnus `b70-flash-next` engine** (vLLM v0.30.0 `ced6857a` + patch series 0001–0019), 262,144-token context, INT8 PLE table served from NVMe, 64 GiB CPU KV tier, OpenAI-compatible API on port 8022 as `qwen-256k`.
 
-**Model variant, stated plainly:** this serves the **dense-full-context QSA variant** (indexer weights dropped) — a **different model variant** from the sparse-QSA checkpoints. It is not a tuning of another engine. Fidelity verdict: `DIFFERENT_MODEL_VARIANT_SHORTS_ONLY` — long-context rows (32K, 80K) agree at 1.0000 against the sparse stack; all divergence is short-row behavioral (2 real code-path diffs) or comparator artifact. See [`docs/notes/dense-qsa-model-variant.md`](docs/notes/dense-qsa-model-variant.md).
-
-## What it is
-
-Everything needed to reproduce the measured stack on a clean Ubuntu 24.04 host with 4x B70:
-
-- `scripts/host-setup.sh` — one-time host provisioning (driver stack, kernel, firmware, Docker limits)
-- `docker/Dockerfile` — the serving image (vLLM fork + pinned toolchain; build fixes baked in)
-- `.env.example` — the verified launch line, every knob annotated
-- `start.sh` / `stop.sh` — preflight → weights identity gate → pre-boot XPU gate → launch → ready-poll; mandatory wedge watchdog
-- `scripts/` — measurement harnesses (`soakfix.py`, `single-stream.py`, `needle-probe.py`, `toolcall.py`) and the wedge watchdog
-- `tests/verify.sh` — the acceptance gate that produced the numbers below
-- `docs/notes/` — the measured-results record and the two design verdicts (dense-variant fidelity, Level-Zero wedge mechanism)
-
-## Prerequisites
-
-`scripts/host-setup.sh` installs packages from two sources that are not enabled on a stock Ubuntu 24.04 install. Enable both first:
-
-- **Intel's GPU software repository** (provides `intel-omix` 0.4 and the Level Zero userspace): follow Intel's client GPU installation guide at <https://dgpu-docs.intel.com>.
-- **The package source for kernel `6.17.0-1010-intel`** (Intel's Ubuntu kernel packages). The script stops with a clear error if it can't find the package.
-
-Also required: Docker Engine, with your user in the `docker` and `render` groups.
-
-## Hardware
-
-| Component | Requirement |
-|---|---|
-| GPU | 4x Intel Arc Pro B70 32GB (Xe2 / Battlemage), oneAPI-capable |
-| Host RAM | ≥100 GiB free |
-| Swap | ≥64 GiB on |
-| Disk | ~200 GB for weights + PLE table |
-| OS | Ubuntu 24.04, kernel 6.17.0-1010-intel, Intel OMIX 0.4 userspace (`scripts/host-setup.sh` provisions and verifies all of it) |
-
-## Results
-
-Every row names its harness, aggregate formula, and prompt shape. **Rows are not comparable across harnesses.** All numbers were measured on the image this Dockerfile builds, weights rev `40b8f18d`, engine port 8022 (`qwen-256k`).
-
-| Metric | Value | Harness / formula / prompt |
-|---|---|---|
-| **32x600 sustained (GATE)** | **1,038.3 tok/s** (sustained_agg = MEAN r2..rN; gate ≥ 900 passed) | soakfix.py · agg = Σcompletion_tokens÷round_wall per round; r1 warmup discarded · open-ended essay prompt, runs TO the 600 cap |
-| MNS ladder (reference) | n=2 95.3 · n=4 179.9 · n=8 335.2 · n=16 629.1 tok/s | same harness, same formula |
-| Single-stream (N=20, first discarded) | **52.5 median (52.3–52.8)** — re-verified three independent ways: fresh cross-network client 52.55 mean / 52.56 median, and the engine's own `Engine 000` lines 52.4–53.3 during a sustained 1200-tok stream | single-stream.py · ctok÷wall, median of 19 · essay request, 600 tok |
-| Single-stream vs context (decode-only) | flat: 53.6 @ 31 tok · 52.7 @ 8.7K · 52.4 @ 17.4K · 51.5 @ 34.7K (4% spread; TTFT excluded) | streaming sweep, temp 0, idle engine |
-| Tool calls | **20/20 structural EQUIV** + multi-tool CORRECT_PICK + nested-args PASS | toolcall.py · compare = function name + argument JSON as OBJECTS (never raw text), temp 0 |
-| 97K needle | **PASS @ 98,211 engine-confirmed tokens**, CORRECT, ×3 salted (TTFT 35.3–35.4 s) | needle-probe.py (engine-calibrated via usage.prompt_tokens), salted, temp 0 |
-| 250K needle | **PASS @ 250,700 tokens**, TTFT 147.3 s (MML 262144 genuinely holds) | needle-probe.py, temp 0 |
-| MTP speculative decode (k=1) | **CLOSED — measured negative**: 49.5 tok/s (−5.7%), accept 47.4%, fidelity DIRTY, n=8 errors; ceiling ≈ 63 tok/s even at 90% accept; unusable multi-tenant. Patches kept in [`experimental/patches/`](experimental/patches/) | A/B vs serial, same image, temp 0 — [`docs/notes/measured-results.md`](docs/notes/measured-results.md) |
-| Pre-boot XPU gate | TRITON_XPU_GATE=PASS — triton vector-add compiles + exact result | docker/gate.py, mandatory before every model boot |
-| Watchdog restart-path | test delivered: tests/watchdog-restart-test.sh | wedge watchdog (8022/`qwen-256k`), py-spy capture first |
+**What changed in this revision:** the engine line moved from the `devan-carlin/vllm@xpu-qwen4exp` fork to the Lumnus `b70-flash-next` series (measured **+10.2 %** at 32 concurrent), the checkpoint is the AWQ build (long-context recall is why), and the PLE n-gram table is INT8 served from NVMe instead of 95.4 GiB of pinned BF16. The devan fork + W4A16 stack stays documented as the rollback (see Rollback).
 
 ## Quick start
 
+Prerequisites (one-time host provisioning — `scripts/host-setup.sh` installs and verifies all of it; REBOOT required):
+
+| Requirement | Value |
+|---|---|
+| GPU | 4x Intel Arc Pro B70 32GB (Xe2 / Battlemage) |
+| Kernel | **6.17.0-1010-intel ONLY** — 7.x kernels are **banned** on this rig (they wedge permanently on B70; see Troubleshooting) |
+| GuC firmware | 70.65 (linux-firmware `fb0889c0`, sha256-pinned by the setup script) |
+| Kernel cmdline | `iommu=off` (grub) |
+| Swap | ≥64 GiB on |
+| Host RAM | ≥100 GiB free at boot |
+| Container | Docker Engine + `buildx` (the image builds with `docker buildx build`) |
+| Disk | ~200 GB for weights + INT8 PLE table (plus the rollback tree if you keep it) |
+
+Then three commands:
+
 ```bash
-git clone https://github.com/imryanpurdy/Qwen3.8-Flash-Next-4x-Intel-B70s
-cd Qwen3.8-Flash-Next-4x-Intel-B70s
-
-# 1. Host platform (CHANGES THE HOST — see warning below; REBOOT required)
-sudo ./scripts/host-setup.sh
-
-# 2. Weights (~180 GB: shards + PLE table) into a plain directory
-#    (--local-dir gives real files; a Hugging Face cache snapshot is symlinks,
-#     which break inside the container mount)
-python3 -m pip install -U huggingface_hub
-hf download devan-carlin/Qwen3.8-Flash-Next-W4A16 \
-    --revision 40b8f18df4d4a32cb6e687a51c78207e5e438522 \
-    --local-dir /data/Qwen3.8-Flash-Next-W4A16
-
-# 3. Config + image
-cp .env.example .env                 # set MODEL_PATH and PLE_TABLE_PATH to the directory above
-./check-weights.sh                   # presence + family + size of the downloaded tree
-docker build -t qwen38-flash-next:local docker/
-
-# 4. Launch (preflight → weights gate → XPU gate → engine → ready-poll → watchdog)
-./start.sh
-
-# 5. Verify the measured numbers reproduce on your host
-./tests/verify.sh
+git clone <your-fork-url>/qwen3.8-flash-next-b70-recipe && cd qwen3.8-flash-next-b70-recipe
+cp .env.example .env          # fill MODEL_PATH / PLE paths / IMAGE — every knob annotated
+./scripts/start.sh            # preflight → weights gate → XPU gate → build-if-missing → launch → ready-poll → watchdog
 ```
 
-`./start.sh` also supports `start|stop|restart|status|logs`; `--launch` is the watchdog's restart path (skips the XPU gate). `./start.sh stop` = watchdog first, then the container.
+Weights, snapshot, and the INT8 PLE build are one-time steps: run `python3 scripts/fetch-weights.py` (or let `start.sh` preflight tell you exactly which one is missing).
 
-> **`scripts/host-setup.sh` CHANGES THE HOST** (kernel, firmware, grub, Docker limits) and **reboots**. Read it before running. Only run it on a dedicated box.
+## Architecture
 
-## Weights
+### Engine
 
-| What | Where |
+The serving image is built from the **Lumnus [`b70-flash-next`](https://github.com/Lumnus/b70-flash-next)** repository's `image/Dockerfile`:
+
+- Base: stock **vLLM v0.30.0** (`ced6857a`) XPU image (`vllm/vllm-openai-xpu`, pinned by digest), torch 2.13, vllm-xpu-kernels 0.1.14.1.
+- **Patch series 0001–0019** (fork branch `b70/v0.30.0`, exported as source patches, sha-verified at build time): PLE quantization + NVMe serving (0006–0013b), thinking budgets and repetition stop (0009/0010), the KV-offload "same document, new question" fix (0014a–f), chunked CPU KV pool allocation (0018), dense-QSA indexer-tensor skip (0019).
+- **Patches 0001–0005 and two closed binaries** (`libgdn_index64.so`, the Level Zero peer-residency shim) are **wu1ff's B70-LLM-Controller pack**, taken from `ghcr.io/wu1ff/qwen38-flashnext-b70:1.0.0` by digest; 0001–0005 are wu1ff's Python changes re-derived as diffs, byte-identical to the pack files.
+
+The image is built with `docker buildx build -f image/Dockerfile -t b70-flash-next:0.30.0-b70.1 ...` (from a clone of the Lumnus repo) and pinned in `.env` as `IMAGE`. `start.sh` runs `scripts/build-image.sh` (pinned commit, digest-compared) if the tag is missing.
+
+### Checkpoint
+
+`wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16` @ **`0939125`** — AWQ-calibrated int4 on the routed experts only (attention, GDN, shared experts, PLE, embeddings stay BF16). Chosen over devan's W4A16 because the int4 attention path in that build misreads long-context values (6/24 cold, 4/24 warm at 118K) while AWQ reads them at 0–1/24. **License note: the wtdcode checkpoint carries no license tag on Hugging Face — license to confirm before redistribution.**
+
+### PLE table path
+
+The model's PLE n-gram table (320M rows × 160 values) is a per-architecture asset that ships **BF16 (95.4 GiB) only in the devan tree** — the AWQ tree does not carry it. The serving path:
+
+1. **Source:** `ple_table_qwen4exp.pt` from `devan-carlin/Qwen3.8-Flash-Next-W4A16` @ `40b8f18d` (keep this tree on disk — it is also the rollback checkpoint).
+2. **Build:** `tools/build_int8_ple.py build` (from the Lumnus repo) streams the BF16 table into a per-row-scaled INT8 `.safetensors` — **48.9 GiB**, 0.66 % relative L2 error, no measurable quality loss. The build is deterministic; run `tools/build_int8_ple.py verify` afterwards and keep the sha256 — the loader checks the `lumnus-ple-int8-rowscale/v1` format tag and cross-checks rows against the BF16 table at boot.
+3. **Serve:** patch 0013/0013b with `B70_PLE_INT8=1 B70_PLE_INT8_NVME=1 B70_PLE_INT8_NVME_READER=native` — the table stays on NVMe, read row-per-4-KiB with `O_DIRECT` by a native C reader, behind an **8 GiB pinned row cache** (total over 4 ranks). Frees ~39 GiB host RAM for the CPU KV tier; costs 2–4 % decode (measured; prefill unchanged).
+
+### Storage layout
+
+| Path | Contents |
 |---|---|
-| Checkpoint (17 shards, ~77 GB) + `ple_table_qwen4exp.pt` (~102 GB) | [`devan-carlin/Qwen3.8-Flash-Next-W4A16`](https://huggingface.co/devan-carlin/Qwen3.8-Flash-Next-W4A16) @ rev **`40b8f18df4d4a32cb6e687a51c78207e5e438522`** — one `hf download --local-dir` fetches both; command in Quick start |
-| Identity gate | `check-weights.sh` — checks presence, model family and size of the downloaded tree (the pinned revision is in your download command) |
-| Model license | **Qwen Community License 1.0** (see License below) |
+| `/data-awq/Qwen3.8-Flash-Next-AWQ-W4A16` | raw AWQ download @ `0939125` (~169 GB) |
+| `/data/awq-snapshot-trial` | the **snapshot** the entrypoint serves: `tools/awq_snapshot.py snapshot <awq-dir> <devan-ple-table> <out>` symlinks the shards, writes a filtered index (PLE shard tensors + indexer tensors removed), links the PLE table |
+| `/srv/hf-devan/Qwen3.8-Flash-Next-W4A16` | devan tree @ `40b8f18d` — BF16 PLE table source **and** the documented rollback checkpoint |
+| `/data/int8-ple/` | `ple_ngram_int8_rowscale.safetensors` (48.9 GiB, fast local NVMe — the native reader reads it with `O_DIRECT`) |
 
-The `ple_table_qwen4exp.pt` PLE table is part of the same pinned revision — no separate source or generation step. It must stay inside `MODEL_PATH`; the container reads it from there.
+`start.sh` identity-gates all of it (shard presence, no symlinked-snapshot breakage, INT8 table format tag).
 
-## Configuration
+### Serving line
 
-All knobs live in `.env` (`cp .env.example .env`), each annotated there. The ones that bite:
+Port **8022**, served name **`qwen-256k`**, MML 262144, **MNS 32**, power-of-two decode graphs, KV fp8, CPU KV tier **64 GiB** (patch 0018 chunking — one pinned allocation ≥ ~31 GiB/rank is refused by the driver), offload fix on (`B70_OFFLOAD_JUNCTION=1 B70_OFFLOAD_GDN_BACKSTEP=1`), watchdog mandatory (load-aware progress gate, py-spy capture, xe engine-reset monitor), night sentinel **alert-only** (writes `ALERT_NEEDS_ROLLBACK.flag`; checkpoint switches are operator calls, never automatic).
 
-- `MAX_NUM_SEQS=32` — the verified operating point (1,038.3 tok/s at 32x600); the ladder above is the reference curve.
-- `OVERRIDE_GENERATION_CONFIG` — sampler pin (temp 0.7 / top_p 0.80 / top_k 20 / presence_penalty 1.5) ships **intentionally**; measurement harnesses neutralize samplers per-request. Don't change the pin when comparing against the table above.
-- `WEDGE_WATCHDOG_*` — mandatory watchdog (`scripts/wedge-watchdog.sh`); disable requires the double opt-out (`WEDGE_WATCHDOG_DISABLE=1` **and** `--no-preflight`).
-- `XPU_GATE_DISABLE=0` — the pre-boot triton gate; same double-opt-out discipline.
-- Optional MTP speculation: `SPECULATIVE_CONFIG` (default OFF — see the Results row for why).
+`UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=1` is **required** on this kernel — see Troubleshooting.
 
-## Known limits
+## Results
 
-- **2–6 h Level-Zero wedge under sustained load** — Xe2 driver-level wedge (`ccs`/`bcs` engine reset signatures); only a container restart recovers; in-flight requests are lost. The watchdog detects and restarts automatically. One precisely localized instance (a graph-capture hang with speculative decoding on) is documented in [`docs/notes/gdn-l0-wedge.md`](docs/notes/gdn-l0-wedge.md); the load-time wedge itself is recovered by the watchdog, not root-caused. Mitigation baked into `scripts/host-setup.sh`: xe GuC job timeout raised to 10000 ms (driver cap; default 5000).
-- **Dense-attention model variant** — this is the dense-full-context QSA checkpoint, not the sparse-QSA variant; short-row behavioral diffs are real and characterized (2 code-path diffs); long-context fidelity agrees. See the note above.
-- **Above 262144 context is untested** — `start.sh` hard-fails; the 250,700-token needle passes at the ceiling.
-- **No authentication** — the API listens on all interfaces at `PORT` with no key. Bind it to localhost, put it behind an authenticating proxy, or add vLLM's `--api-key`.
-- **`MAX_NUM_SEQS` > 32 hard-fails** (KV-cache math knee at MML 262144); 17–31 warn as untested.
+Production baseline = devan fork engine + devan W4A16 checkpoint (the previous line). Lumnus trial = this README's stack. Same host, same harnesses.
+
+| Metric | Production baseline (devan fork) | Lumnus trial | Notes |
+|---|---|---|---|
+| 32-stream sustained (n32) | 1,015.0 tok/s | **1,118.4 tok/s (+10.2 %)** | same harness/formula |
+| 16-stream (n16) | 622.0 tok/s | **652.9 tok/s (+5.0 %)** | |
+| Single-stream decode | 49.3 tok/s | **52.4–52.7 tok/s** | |
+| Recall ≤100K (100 lookups, 60K/100K docs) | 95/100 (historical) | **99/100** (d60k 50/50, d100k 49/50) | the one miss: record 2663, truth `DLJPY`, answered `EXPDE` |
+| Prefix-scan r3 | — | **PASS** — drift cold-cold 0.0, cold-warm 0.0 (limit 0.06); warm hit 118,144 tokens; 48 responses, 0 errors, 0 degenerate; 1 misquote cold / 1 warm | the 0014 offload fix working as designed |
+| 60-min soak | — | **389 waves, 3,112/3,112 OK, 0 errors, p50 8.9 s, max 10.0 s, 0 restarts, 0 engine resets** | 8-way concurrent, mixed depths |
+| Heavy-file agent batch (8 tasks) | 7/8 | **8/8, 39 tool calls clean, 0 loops, 695 s** | delegated-children shape |
+| PLE NVMe row cache | — | **hit rate 95.4 %** (238,641 / 250,112), **p50 0.76 ms** | native reader, 8 GiB cache |
+
+## Client configuration
+
+OpenAI-compatible chat completions at `http://<host>:8022/v1`, model **`qwen-256k`**, 262,144-token window. No authentication — bind to localhost or front it with an authenticating proxy.
+
+```json
+{
+  "model": "qwen-256k",
+  "temperature": 0.7,
+  "top_p": 0.80,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 1.5
+}
+```
+
+- **These sampler values are the server pin and the measured ceiling.** Long-context recall holds at temp ≤ 0.7; every logged miss was a confident wrong value, and higher temperatures widen exactly that failure mode. If your client ignores the server default, send these explicitly.
+- **Reasoning parser:** `qwen3` (the engine serves `reasoning`/`reasoning_content` separately). Thinking is switched off with `enable_thinking: false` or a `reasoning_effort` of `none`/`off`; per-effort thinking budgets are capped server-side (`B70_THINKING_BUDGET`: minimal/low 512 → max/ultra 12288 tokens).
+- **Tool calls:** parser `qwen3_xml`; verified structurally correct including multi-tool and nested-args calls.
+- **Keep client context ≤ ~100K tokens.** Inside that envelope recall is 99/100; mid-document recall degrades near/above ~200K (see Known limits). Client config for agent frameworks (Hermes delegation, context caps, stale timeouts): [`docs/hermes-clients.md`](docs/hermes-clients.md).
 
 ## Troubleshooting
 
-- **Preflight FAIL (XPUs/RAM/swap/kernel/GuC/iommu)** → run `sudo ./scripts/host-setup.sh`, reboot, re-run. `start.sh` prints exactly which floor failed.
-- **XPU GATE FAIL** → triton/JIT gap in the image; fix via `docker/Dockerfile`.
-- **Image not present locally** → build it: `docker build -t qwen38-flash-next:local docker/` (the `IMAGE` pin in `.env` is the exact measured build; a fresh host builds its own and points `IMAGE` at the local tag).
-- **READY GATE FAIL** → `docker logs qwen38-flash-next`; graphs capture inside torch.compile (~135 s) before `Application startup complete`.
-- **Idle-looking "gen=0.1 prefill=5.3" log lines** → engine log lines are 10-second windowed averages; the watchdog's 1-token liveness probes appear as near-zero ticks. Sustained decode reads ~52–53 on any tick a generation actually fills.
-- **Watchdog** → state + captures in `.run/`; design notes in [`scripts/watchdog.md`](scripts/watchdog.md).
+- **Engine freezes, `xe ... Engine reset: engine_class=bcs` bursts in dmesg.** The Level-Zero copy-engine (bcs) reset signature: all 4 TP workers stuck in `async_tensor_h2d`, engine core blocked in `shm_broadcast.wait`, `/health` stays 200 while the engine is dead (probe with a 1-token completion). Fix is the required flag `UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=1` — with it: 3 freezes → 0 across a 60-min prefix-cold soak. `sudo dmesg | grep -aE "Engine reset: engine_class=(ccs|bcs)"` (unprivileged dmesg may silently return nothing).
+- **The empty-env-var trap.** `VAR=` (declared but empty) is **not** unset — oneCCL parses the empty string and crashes worker init (`unexpected value: , expected values: 0, 1`). In `start.sh`, pass such flags with `${VAR:+-e VAR=$VAR}`, never `-e VAR=${VAR:-}`; unset in `.env` → omitted from the docker line entirely.
+- **Reboot after `DEVICE_LOST` bursts.** A burst of Level-Zero resets can leave devices in `DEVICE_LOST` that a container restart alone does not clear (re-launch fails `OUT_OF_RESOURCES` on all workers). Stop, retry one boot; if workers fail again on an idle host, reboot, then re-run the XPU gate and READY gate before declaring recovery.
+- **7.x kernels are banned.** 7.0.0-31 carries the job-timeout fix but lacks the flat-CCS fix (landed 6.18.51), and 7.x/newer-GuC combinations wedge permanently on B70. Stay on 6.17.0-1010-intel; `start.sh` preflight rejects anything else.
+- **Preflight / XPU gate / READY gate failures** → `start.sh` prints which floor failed; the gate catches JIT gaps in seconds; cold boots take ~4–5 min (graph capture inside torch.compile) before `Application startup complete`.
+
+## Known limits
+
+- **Mid-document recall degrades near/above ~200K tokens.** In a 200K-token document, recall at the ~118K position collapsed (12/34) while 60K and 200K-position records read fine — the failure is concentrated mid-document, not monotonic with depth. It does not appear at ≤100K. Keep client contexts ≤100K; re-test before raising the cap.
+- **~1 % recall miss rate at ≤100K** (1 miss in 100 on the Lumnus line; misses are confident wrong values, never refusals) — the client-side verify habit in `docs/hermes-clients.md` is the mitigation.
+- **NVMe PLE decode cost: −2 … −4 %** vs the table pinned in RAM (the per-step host sync, not the reads). Prefill unchanged. If you have the host RAM, pinning INT8 in RAM (`B70_PLE_INT8_NVME` unset) buys the 2–4 % back.
+- **No authentication** on the API; bind to localhost or proxy it.
+- **`MAX_NUM_SEQS` > 32 hard-fails** (KV-cache knee at MML 262144).
+
+## Rollback
+
+The previous production line stays documented and bootable in one `start.sh` cycle:
+
+1. **Checkpoint rollback:** `MODEL_PATH` → `/srv/hf-devan/Qwen3.8-Flash-Next-W4A16` (devan-carlin's own W4A16 build @ `40b8f18d`, ~168 GB, kept on disk for exactly this and for the BF16 PLE table).
+2. **Engine rollback:** the devan-carlin `vllm@xpu-qwen4exp` fork image + the AWQ es-lane configuration (AWQ checkpoint, `UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=1`, BF16 PLE pinned, no 0014 offload fix) — the line that produced the baseline numbers above, including the 60-min soak with zero resets.
+
+The night sentinel is alert-only by design: a trigger writes `ALERT_NEEDS_ROLLBACK.flag`; an operator makes the switch.
 
 ## Credits
 
-- **devan-carlin** — the vLLM fork [`xpu-qwen4exp`](https://github.com/devan-carlin/vllm) and the W4A16 weights ([HF repo](https://huggingface.co/devan-carlin/Qwen3.8-Flash-Next-W4A16))
-- **Intel** — the [`omix`](https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html) base image and the XPU software stack
-- **Qwen** — the [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) model, under the [Qwen Community License 1.0](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE)
+- **Lumnus** — the [`b70-flash-next`](https://github.com/Lumnus/b70-flash-next) engine and patch series 0001–0019, [`Lumnus/vllm`](https://github.com/Lumnus/vllm) `b70/v0.30.0` (Apache-2.0, with NOTICE).
+- **wu1ff** — [B70-LLM-Controller](https://github.com/wu1ff/B70-LLM-Controller) (MIT): patches 0001–0005 and the two binaries (`libgdn_index64.so`, the Level Zero peer-residency shim) via `ghcr.io/wu1ff/qwen38-flashnext-b70:1.0.0`.
+- **devan-carlin** — the early community XPU port (`devan-carlin/vllm@xpu-qwen4exp`), the [`Qwen3.8-Flash-Next-W4A16`](https://huggingface.co/devan-carlin/Qwen3.8-Flash-Next-W4A16) weights (rollback checkpoint + the BF16 PLE table every INT8 build derives from).
+- **wtdcode** — the [`Qwen3.8-Flash-Next-AWQ-W4A16`](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16) checkpoint we serve (**license to confirm** — no license tag on the HF repo).
+- **TSUMUGI-XE** — the Level Zero peer-residency analysis and first shim ([intel/compute-runtime#968](https://github.com/intel/compute-runtime/issues/968)).
+- **Intel** — the XPU software stack, [llm-scaler](https://github.com/intel/llm-scaler), the XPU work in vLLM.
+- **vLLM / vllm-xpu-kernels** (Apache-2.0) — everything here is built on them; patch 0014e is a backport of vllm-project/vllm#51787.
+- **Qwen** — the [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) model, under the [Qwen Community License 1.0](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE).
 
 ## License
 
-This repo's kit (scripts, Dockerfile, docs): MIT — see [LICENSE](LICENSE).
-The model weights are governed by the **[Qwen Community License 1.0](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE)**; read it before use.
+This repo's kit (scripts, docs, configs): MIT — see [LICENSE](LICENSE). The engine image is Apache-2.0 (Lumnus) carrying wu1ff's MIT files; see the Lumnus repo's NOTICE. Model weights are governed by their own terms — Qwen Community License 1.0 for the base model; the wtdcode AWQ checkpoint's license is **to be confirmed** before redistribution.

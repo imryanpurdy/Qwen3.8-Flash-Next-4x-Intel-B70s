@@ -107,6 +107,13 @@ fi
 # CCL_TOPO_P2P_ACCESS=0 forces the oneCCL fd-exchange path, which dies at
 # worker-init all_reduce on this rig (ze_handle_manager device_fd invalid);
 # absent = auto-detect (works), 1 = direct P2P (works, measured neutral).
+#
+# PASS-THROUGH LAW (2026-10-04): boolean/enum engine flags must be passed with
+# the ${VAR:+-e VAR=$VAR} pattern — NOT -e "${VAR:-}". An EMPTY value reaching
+# the container is not "unset": oneCCL parses it and dies at worker init
+# ("CCL_ZE_CACHE_OPEN_IPC_HANDLES: unexpected value: , expected values: 0, 1"),
+# and an empty UR_L0 flag would likewise be parsed as garbage. Unset vars are
+# simply omitted from the docker run line.
 EXTRA_CCL_ARGS=()
 if [[ -n "${CCL_TOPO_P2P_ACCESS:-}" ]]; then
     EXTRA_CCL_ARGS+=(-e "CCL_TOPO_P2P_ACCESS=$CCL_TOPO_P2P_ACCESS")
@@ -360,10 +367,18 @@ ok "Manifest: .run/manifest.json"
 # ---------------------------------------------------------------------------
 if [[ "$WD_CALLER" == "1" ]]; then
     info "Restart requested by the running watchdog — leaving it in place (no respawn)."
+# ---------------------------------------------------------------------------
+# Watchdog single-instance guard: pgrep by script name, never spawn a second
+# watchdog (two watchdogs double-probe, double-restart, and race the pidfile).
+# ---------------------------------------------------------------------------
 elif [[ "$WEDGE_WATCHDOG_DISABLE" != "1" || "$NO_PREFLIGHT" != "true" ]]; then
     info "Spawning wedge watchdog (interval=${WEDGE_WATCHDOG_INTERVAL}s, retries=${WEDGE_WATCHDOG_RETRIES})"
-    nohup "$SCRIPT_DIR/scripts/wedge-watchdog.sh" >> .run/watchdog.log 2>&1 &
-    echo "$!" > .run/watchdog.pid
+    if pgrep -f "wedge-watchdog\\.sh" >/dev/null 2>&1; then
+        info "Wedge watchdog already running - not spawning a second one"
+    else
+        nohup "$SCRIPT_DIR/scripts/wedge-watchdog.sh" >> .run/watchdog.log 2>&1 &
+        echo "$!" > .run/watchdog.pid
+    fi
     ok "Watchdog pid $(cat .run/watchdog.pid) (log: .run/watchdog.log)"
 else
     red "  === WEDGE WATCHDOG DISABLED (double opt-out) — the server WILL wedge unattended within 2-6 h under load ==="
@@ -393,6 +408,8 @@ docker run -d --name "$CONTAINER_NAME" \
   -e TRITON_CACHE_DIR=/root/.cache/triton \
   -e TRANSFORMERS_OFFLINE=1 \
   -e UR_L0_SYNC_MODE="${UR_L0_SYNC_MODE:-BLOCKING}" \
+  ${UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD:+-e UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=$UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD} \
+  ${CCL_ZE_CACHE_OPEN_IPC_HANDLES:+-e CCL_ZE_CACHE_OPEN_IPC_HANDLES=$CCL_ZE_CACHE_OPEN_IPC_HANDLES} \
   -e VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}" \
   "${EXTRA_CCL_ARGS[@]}" \
   -e VLLM_XPU_ENABLE_XPU_GRAPH="${VLLM_XPU_ENABLE_XPU_GRAPH:-1}" \
@@ -415,7 +432,8 @@ docker run -d --name "$CONTAINER_NAME" \
   --tool-call-parser "$TOOL_CALL_PARSER" \
   --generation-config "$GENERATION_CONFIG" \
   --override-generation-config "$OVERRIDE_GENERATION_CONFIG" \
-  "${SPEC_ARGS[@]}"
+  "${SPEC_ARGS[@]}" \
+  $EXTRA_VLLM_ARGS
 ok "Container started: $CONTAINER_NAME"
 log_to_run "container up (boot $(date -u +%FT%TZ))"
 
