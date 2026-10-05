@@ -4,6 +4,9 @@
 #            ROLLBACK / DEVAN-FORK KIT (pre-overhaul verified line, a69fba21).
 #            The PRODUCTION lane launcher is scripts/start.sh — do not use
 #            this one unless docs/operations/rollback.md told you to.
+#            NOTE: MAX_NUM_SEQS default here is 32 (this kit's soak-validated
+#            point); the deployed es-lane rollback launcher runs MNS 4 with
+#            fp8 KV — see docs/operations/rollback.md "The two lanes".
 #            Reuses the repo's docker/gate.py and scripts/wedge-watchdog.sh
 #            via REPO_ROOT; its .env/.run live in this directory.
 #

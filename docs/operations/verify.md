@@ -58,9 +58,9 @@ long-context state:
   0.0/0.0** (cold-vs-warm 0.0 against a 0.0 cold-vs-cold floor — a cache hit
   restores the cold path's state exactly; the pre-fix failure signature was
   0.25–0.36 drift with warm-only anomalies).
-- **≤100K recall — `recall100k.py`.** Two full documents (~60K and ~95K
+- **≤100K recall — `recall100k.py`.** Two full documents (~60K and ~100K
   tokens), 50 paired exact-value lookups each (100 total) at random positions,
-  concurrency 8, thinking off, temp 0.8/top_p 0.95; wrong values and
+  concurrency 8, thinking off, temp 0.7 sampler pin as shipped; wrong values and
   non-answers reported separately. **What PASS looks like at promotion:
   99/100** correct exact values.
 

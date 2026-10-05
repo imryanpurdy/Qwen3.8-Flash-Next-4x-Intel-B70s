@@ -321,6 +321,30 @@ ok "Weights tree: $MODEL_PATH (${local_shards} shards)"
 ok "PLE table: $PLE_TABLE_PATH ($(du -h "$PLE_TABLE_PATH" | cut -f1))"
 
 # ---------------------------------------------------------------------------
+# Image: build if missing (pinned Lumnus commit; verify-overlay gates run at
+# build time; the built image is compared against the digest of record).
+# MUST come before the XPU gate: the gate docker-runs $IMAGE, so on a fresh
+# host without the image the gate would dead-end before the build ever ran.
+# ---------------------------------------------------------------------------
+docker info >/dev/null 2>&1 || err "docker daemon not reachable (is your user in the docker group?)."
+IMAGE_REF="$IMAGE"
+if [[ "$DRY_RUN" == "true" ]]; then
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        ok "Image present: $IMAGE_REF"
+    else
+        info "[DRY-RUN] image $IMAGE not present — a real start would build it (scripts/build-image.sh)"
+    fi
+else
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        info "Image $IMAGE not present — building from the pinned Lumnus commit (scripts/build-image.sh)..."
+        [[ -x "$SCRIPT_DIR/build-image.sh" ]] || err "scripts/build-image.sh missing — cannot build the image of record."
+        "$SCRIPT_DIR/build-image.sh" --tag "$IMAGE"
+    fi
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || err "Image $IMAGE still not present after the build attempt."
+    ok "Image present: $IMAGE_REF"
+fi
+
+# ---------------------------------------------------------------------------
 # PRE-BOOT XPU GATE — trivial triton vector-add must compile AND be exact
 # (mandatory standing rule; catches every remaining JIT gap in seconds)
 # ---------------------------------------------------------------------------
@@ -342,28 +366,6 @@ else
         || { echo "$GATE_OUT" | tail -5; err "XPU GATE FAIL — vector-add did not compile/verify (see above). Fix before any model boot."; }
     ok "TRITON_XPU_GATE=PASS (compile + exact result)"
     log_to_run "XPU_GATE=PASS"
-fi
-
-# ---------------------------------------------------------------------------
-# Image: build if missing (pinned Lumnus commit; verify-overlay gates run at
-# build time; the built image is compared against the digest of record).
-# ---------------------------------------------------------------------------
-docker info >/dev/null 2>&1 || err "docker daemon not reachable (is your user in the docker group?)."
-IMAGE_REF="$IMAGE"
-if [[ "$DRY_RUN" == "true" ]]; then
-    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
-        ok "Image present: $IMAGE_REF"
-    else
-        info "[DRY-RUN] image $IMAGE not present — a real start would build it (scripts/build-image.sh)"
-    fi
-else
-    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-        info "Image $IMAGE not present — building from the pinned Lumnus commit (scripts/build-image.sh)..."
-        [[ -x "$SCRIPT_DIR/build-image.sh" ]] || err "scripts/build-image.sh missing — cannot build the image of record."
-        "$SCRIPT_DIR/build-image.sh" --tag "$IMAGE"
-    fi
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || err "Image $IMAGE still not present after the build attempt."
-    ok "Image present: $IMAGE_REF"
 fi
 
 # ---------------------------------------------------------------------------
@@ -427,7 +429,13 @@ DOCKER_RUN=(docker run -d --name "$CONTAINER_NAME"
     --ipc host --network host --shm-size "${SHM_SIZE:-16g}"
     --env-file "$LUMNUS_ENV")
 for v in ${EXTRA_ENGINE_ENV_VARS:-}; do
-    DOCKER_RUN+=(${!v:+-e "$v=${!v}"})
+    # Indirect expansion, then word-split ONLY the var name; the VALUE is
+    # appended as one element via "$v=${!v}" quoting — a space-containing
+    # value (e.g. OVERRIDE_GENERATION_CONFIG's JSON) stays a single argv item.
+    val="${!v:-}"
+    if [[ -n "$val" ]]; then
+        DOCKER_RUN+=(-e "$v=$val")
+    fi
 done
 # The engine env (lumnus.env) puts EVERY cache path under /cache — HF_HOME,
 # TMPDIR, TRITON_CACHE_DIR, VLLM_CACHE_ROOT, XDG_CACHE_HOME,

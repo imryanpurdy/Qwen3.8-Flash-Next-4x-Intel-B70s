@@ -45,7 +45,7 @@ The serving image is built from the **Lumnus [`b70-flash-next`](https://github.c
 - **Patch series 0001–0019** (sub-lettered; **21 files** — 0011 is an unpublished draft, 0015–0017 absent; per-file manifest in `docs/engine/PROVENANCE.md`) (fork branch `b70/v0.30.0`, exported as source patches, sha-verified at build time): PLE quantization + NVMe serving (0006–0013b), thinking budgets and repetition stop (0009/0010), the KV-offload "same document, new question" fix (0014a–f), chunked CPU KV pool allocation (0018), dense-QSA indexer-tensor skip (0019).
 - **Patches 0001–0005 and two closed binaries** (`libgdn_index64.so`, the Level Zero peer-residency shim) are **wu1ff's B70-LLM-Controller pack**, taken from `ghcr.io/wu1ff/qwen38-flashnext-b70:1.0.0` by digest; 0001–0005 are wu1ff's Python changes re-derived as diffs, byte-identical to the pack files.
 
-The image is built with `docker buildx build -f image/Dockerfile -t b70-flash-next:0.30.0-b70.1 ...` (from a clone of the Lumnus repo) and pinned in `.env` as `IMAGE`. `scripts/start.sh` runs `scripts/build-image.sh` (pinned commit, digest-compared) if the tag is missing.
+The image is built by `scripts/build-image.sh` (`docker buildx build -f image/Dockerfile -t b70-lumnus-trial:v1 ...` from a clone of the Lumnus repo at the pinned commit, digest-compared) and pinned in `.env` as `IMAGE` (default `b70-lumnus-trial:v1`). `scripts/start.sh` runs `scripts/build-image.sh` if the tag is missing.
 
 ### Checkpoint
 
@@ -80,9 +80,9 @@ Port **8022**, served name **`qwen-256k`**, MML 262144, **MNS 32**, power-of-two
 
 ## Results
 
-Production baseline = devan fork engine + devan W4A16 checkpoint (the previous line). Lumnus trial = this README's stack. Same host, same harnesses.
+Production baseline = the devan fork engine running the **wtdcode AWQ checkpoint** (the previous production line; KV pool fingerprint 845,862 tokens = the AWQ build — see `STATUS-20261004.md`). Lumnus trial = this README's stack. Same host, same harnesses.
 
-| Metric | Production baseline (devan fork engine + devan W4A16 checkpoint — the pre-Lumnus production line) | Lumnus trial | Notes |
+| Metric | Production baseline (devan fork engine + AWQ checkpoint — the pre-Lumnus production line) | Lumnus trial | Notes |
 |---|---|---|---|
 | 32-stream sustained (n32) | 1,015.0 tok/s | **1,118.4 tok/s (+10.2 %)** | same harness/formula |
 | 16-stream (n16) | 622.0 tok/s | **652.9 tok/s (+5.0 %)** | |
@@ -134,7 +134,7 @@ OpenAI-compatible chat completions at `http://<host>:8022/v1`, model **`qwen-256
 The previous production line stays documented and bootable in one `rollback/devan-fork/start.sh` cycle (the rollback launcher lives under `rollback/devan-fork/`, separate from the production entrypoint `scripts/start.sh`):
 
 1. **Checkpoint rollback:** `MODEL_PATH` → `/srv/hf-devan/Qwen3.8-Flash-Next-W4A16` (devan-carlin's own W4A16 build @ `40b8f18d`, ~168 GB, kept on disk for exactly this and for the BF16 PLE table).
-2. **Engine rollback:** the devan-carlin `vllm@xpu-qwen4exp` fork image (a69fba21) + the es-lane configuration (`UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=1`, no Lumnus patches — the 0014 offload fix is Lumnus-only) serving the **devan W4A16 checkpoint**. This is the same engine+checkpoint line that produced the baseline numbers above, including the 60-min soak with zero resets. **PLE never executes on this engine:** the fork's PLE table path was absent on the rig and the guard short-circuited (forensics: default `PLE_TABLE_PATH` not present, zero `FileNotFoundError` in the boot log, forward never reached `_ensure_table` — only the capture-legal early-return branch ran). Treat the rollback line as a **dense fallback**, not a PLE line; the AWQ checkpoint belongs to the Lumnus production line, not to this lane.
+2. **Engine rollback:** the devan-carlin `vllm@xpu-qwen4exp` fork image (a69fba21) + the es-lane configuration (`UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=1`, no Lumnus patches — the 0014 offload fix is Lumnus-only) serving the devan W4A16 checkpoint. **Note: this is *not* the line that produced the baseline numbers above** — the baseline (n32 1,015.0 / n16 622.0 / 49.3 tok/s / 95/100 recall) was measured on the devan fork running the **wtdcode AWQ checkpoint** (`STATUS-20261004.md` "What's in production"; KV pool fingerprint 845,862 = the AWQ build). **PLE never executes on this engine:** the fork's PLE table path was absent on the rig and the guard short-circuited (forensics: default `PLE_TABLE_PATH` not present, zero `FileNotFoundError` in the boot log, forward never reached `_ensure_table` — only the capture-legal early-return branch ran). Treat the rollback line as a **dense fallback**, not a PLE line; the AWQ checkpoint belongs to the Lumnus production line, not to this lane.
 
 The night sentinel is alert-only by design: a trigger writes `ALERT_NEEDS_ROLLBACK.flag`; an operator makes the switch.
 

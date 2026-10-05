@@ -12,8 +12,8 @@ alert trigger and the watchdog evidence.
 | Container | `b70-lumnus-prod` | `es-lane` |
 | Engine | Lumnus b70-flash-next (vLLM v0.30.0 + patches 0001–0019) | vLLM fork `devan-carlin/vllm@xpu-qwen4exp` (a69fba21) on `intel/omix:0.4.0-devel-ubuntu24.04` |
 | Image | `b70-lumnus-trial:v1` (local build of record) | **pinned by digest**: `es-lane@sha256:15a806fc7367a44f6ab66d42e9f1b237fbb7431f4e913eb9ea197505f8d8417a` |
-| Checkpoint | wtdcode AWQ W4A16 (snapshot) | devan-carlin W4A16 (`40b8f18d`) — the same engine+checkpoint line as the pre-Lumnus production baseline (README "Results"), which is why the rollback reproduces those numbers |
-| Line | TP4+EP, MML 262144, MNS 32, **bf16 KV** (no `--kv-cache-dtype` flag; vLLM default follows `--dtype bfloat16`), 64 GiB CPU KV-offload | TP4+EP, MML 262144, **MNS 4**, **fp8 KV** (explicit `--kv-cache-dtype fp8`), **no KV-offload tier**, parsers qwen3/qwen3_xml |
+| Checkpoint | wtdcode AWQ W4A16 (snapshot) | devan-carlin W4A16 (`40b8f18d`) — **not** the baseline checkpoint: the pre-Lumnus baseline (README "Results") was measured on this engine running the **wtdcode AWQ** checkpoint (`STATUS-20261004.md` "What's in production", KV pool fingerprint 845,862 = AWQ) |
+| Line | TP4+EP, MML 262144, MNS 32, **bf16 KV** (no `--kv-cache-dtype` flag; vLLM default follows `--dtype bfloat16`), 64 GiB CPU KV-offload | TP4+EP, MML 262144, **MNS 4** (deployed es-lane launcher line 117; the kit's `.env.example` default is 32 — the kit's own soak-validated point, not what the deployed rollback lane runs), **fp8 KV** (explicit `--kv-cache-dtype fp8`), **no KV-offload tier**, parsers qwen3/qwen3_xml |
 | Sampler | `--override-generation-config` in serve args (see production-lane.md) | `OVERRIDE_GENERATION_CONFIG` in `.env` (same pinned set) |
 | Port / served name | 8022 / `qwen-256k` | 8022 / `qwen-256k` — **identical**, so no client/gateway reconfiguration is needed on rollback; only the container swaps |
 

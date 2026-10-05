@@ -18,11 +18,11 @@ happened once (ledger-corrected 2026-10-04).
 | Graceful stop | `stop.sh` | watchdog first (TERM, then KILL after ~5 s), then `docker rm -f` the container |
 | Control vars | `.env` | model paths, served name, port, image tag, watchdog knobs, preflight floors |
 | Engine env | `lumnus.env` | passed to the container via `docker run --env-file` (Level-Zero/oneCCL pins, PLE INT8-NVMe switches, chat defaults) |
-| Serve flags | `serve-s32-prod.args` | one flag per line; `--kv-offloading-size` appended by `start.sh` |
+| Serve flags | `serve-args` (repo root) | one flag per line; `--kv-offloading-size` appended by `start.sh` |
 | Model config | `serve-config.json` | bind-mounted architecture config (qwen4_exp) |
 | Watchdog | `scripts/wedge-watchdog.sh` | mandatory wedge supervisor (see contract below) |
-| Sentinel | `prod-sentinel.sh` | alert-only degradation sentinel (operator-scheduled) |
-| Runtime state | `.run/` | `start.log`, `manifest.json`, `prod/watchdog.pid`, `prod/watchdog.log`, `prod/wedge-<ts>.log` |
+| Sentinel | alert-only degradation sentinel (operator-scheduled; deployed on the rig, not shipped in-repo) |
+| Runtime state | `.run/` | `start.log`, `manifest.json`, `watchdog.pid`, `watchdog.log`, `wedge-<ts>.log` |
 
 Engine of record: Lumnus b70-flash-next (vLLM v0.30.0 + Lumnus patch series
 0001–0019 — sub-lettered, 21 files; see `docs/engine/PROVENANCE.md`), image `b70-lumnus-trial:v1` (local build of record), wtdcode AWQ
@@ -37,7 +37,7 @@ es-lane stack, image pinned by digest.
 **every validation happens before any running service is touched**:
 
 1. **Knob validation** — `.env` required vars present; MML/MNS/TP parsed out of
-   `serve-s32-prod.args` and gated: TP must be 4 (2 KV heads — TP6 impossible),
+   `serve-args` and gated: TP must be 4 (2 KV heads — TP6 impossible),
    MML ≤ 262144 (validated ceiling), MNS ≤ 32 (KV-math knee at MML 262144;
    32 is the soak-validated operating point: 3112/3112, 0 errors, 60 min).
 2. **Preflight** — exactly 4 XPUs visible; ≥100 GiB available RAM; ≥64 GiB swap
@@ -75,8 +75,7 @@ gate — this is the watchdog's restart interface (`PROD_RESTART_CMD`, default
 - **Stop:** `<lane>/stop.sh` — order matters: TERM the watchdog first (so it
   cannot "detect a wedge" and restart the server mid-teardown), then
   `docker rm -f` the container (graceful: SIGTERM, SIGKILL after stop timeout).
-  It handles both pidfile locations (`.run/watchdog.pid` legacy,
-  `.run/prod/watchdog.pid` production) and belt-and-suspenders TERMs any
+  It reads the single pidfile (`.run/watchdog.pid`) and belt-and-suspenders TERMs any
   lingering `wedge-watchdog.sh` process (end-anchored pattern).
 - **Start:** `<lane>/start.sh` — the full contract above.
 - **Restart:** `<lane>/start.sh restart` for planned work (re-runs every gate).
@@ -134,16 +133,16 @@ Loop (interval 60 s, `.env`):
 8. **Capture-first discipline**: on wedge detection, **before any restart**,
    capture last 200 container-log lines + `py-spy` python-frame dumps of every
    TP worker / EngineCore (via `docker top`, `sudo -n py-spy dump`) + top-TID
-   CPU table, into `.run/prod/wedge-<ts>.log`. Then kill the container process
+   CPU table, into `.run/wedge-<ts>.log`. Then kill the container process
    group and `docker rm -f`.
 9. **Restart**: via `PROD_RESTART_CMD` (default `<lane>/start.sh --launch`),
    **bounded to 3 retries** (`WEDGE_WATCHDOG_RETRIES`); after that it gives up
-   loudly and exits — a human takes over; evidence in `.run/prod/wedge-*.log`.
+   loudly and exits — a human takes over; evidence in `.run/wedge-*.log`.
 10. **Single instance (host-wide, by design)**: `start.sh` will not spawn a
     second watchdog while `pgrep -f wedge-watchdog.sh` finds one — one rig,
     one serving lane. `LANE_DIR` separates state dirs, not concurrency.
 
-## Sentinel (`prod-sentinel.sh`) — alert-only
+## Sentinel — alert-only
 
 Operator-scheduled (e.g. cron every 30 min). **Alert-only: no automatic
 rollback** — checkpoint/engine switches are operator decisions. Triggers:
@@ -155,12 +154,12 @@ rollback** — checkpoint/engine switches are operator decisions. Triggers:
 On trigger it appends a line to its log and writes
 `ALERT_NEEDS_ROLLBACK.flag` (one alert per 75 minutes — thrash guard). Healthy
 ticks are silent, exit 0. When the flag appears: read the trigger, check
-`.run/prod/wedge-*.log` and `docker logs`, then decide — restart the lane, or
+`.run/wedge-*.log` and `docker logs`, then decide — restart the lane, or
 roll back per `rollback.md`.
 
 ## Sampling pins (restored 2026-10-05)
 
-`serve-s32-prod.args` carries the model-card instruct sampling set as a server
+`serve-args` carries the model-card instruct sampling set as a server
 override:
 
 ```
@@ -174,7 +173,7 @@ exactly this set. The pre-promotion production line ran temperature-only
 of the pins. The wtdcode checkpoint card warns that temperature > 0.7
 degenerates and that greedy decoding loops — the pinned set is the safe
 operating envelope, not a tuning experiment. Pre-sampler args are preserved on
-the host as `serve-s32-prod.args.bak-pre-sampler`.
+the host as `serve-args.bak-pre-sampler`.
 
 **Repetition safety net on top.** `lumnus.env` sets
 `B70_DEFAULT_REPETITION_DETECTION=max=1,min=1,count=128` (Lumnus patch 0010):
@@ -199,6 +198,6 @@ record (0/5 repetition stops with the pins + detection active).
 - **Every production change is a reported change.** Restart, flag flip, args
   edit, rollback — report first, act second. The watchdog's automatic restarts
   are the only unsupervised exception, and they are logged
-  (`.run/prod/watchdog.log`, `wedge-*.log`) and alerted (sentinel).
+  (`.run/watchdog.log`, `wedge-*.log`) and alerted (sentinel).
 - After any restart: `<lane>/start.sh status` green, then the smoke tier of
   `verify.md` before declaring recovery.

@@ -69,17 +69,26 @@ def err(msg):
 
 
 def hf_download(repo: str, rev: str, dest: str) -> None:
-    """Download a pinned revision with --local-dir (real files, no symlink forest)."""
-    env = dict(os.environ)
-    env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
-    cmd = [
-        sys.executable, "-m", "huggingface_hub.commands.huggingface_cli", "download",
-        repo, "--revision", rev, "--local-dir", dest,
-    ]
+    """Download a pinned revision with snapshot_download (real files, no symlink forest).
+
+    Uses the Python API, not the CLI: the `huggingface_hub.commands.huggingface_cli`
+    module was removed in huggingface_hub 1.0 (the CLI now lives at `hf`), and a
+    fresh `pip install huggingface_hub` on a new host would crash the bootstrap.
+    """
     info(f"Downloading {repo} @ {rev} -> {dest}")
-    r = subprocess.run(cmd, env=env)
-    if r.returncode != 0:
-        err(f"download of {repo} failed (exit {r.returncode}). Check HF_TOKEN / disk space.")
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        err("huggingface_hub not installed — pip install huggingface_hub (needs >=0.20)")
+    try:
+        snapshot_download(
+            repo_id=repo,
+            revision=rev,
+            local_dir=dest,
+            token=os.environ.get("HF_TOKEN") or None,
+        )
+    except Exception as e:  # network/auth/disk failures surface here
+        err(f"download of {repo} failed: {e}. Check HF_TOKEN / disk space.")
 
 
 def step_download():

@@ -85,7 +85,7 @@ All runs: thinking off, sampler pin as shipped (temp 0.7), concurrency 8, ≤100
 |---|---|
 | ~60K | 50/50 |
 | ~100K | 49/50 |
-| **Total** | **99/100** (production baseline, devan fork engine: 95/100 historical) |
+| **Total** | **99/100** (production baseline, devan fork engine + wtdcode AWQ checkpoint: 95/100 historical) |
 
 The single miss: 100K doc, record 2663 — truth `DLJPY`, answered `EXPDE`. Every miss on this stack class is a wrong value with `finish=stop`; no refusals, no API errors.
 
