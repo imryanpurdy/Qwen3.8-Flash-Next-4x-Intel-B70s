@@ -13,12 +13,24 @@
 # Requires sudo (NOPASSWD on the rig). Safe to re-run: idempotent re-render
 # + daemon-reload; enable is a no-op when already enabled.
 #
+# Unit semantics (why this is safe to leave armed):
+#   - Type=oneshot + RemainAfterExit=yes: start.sh blocks until READY, then
+#     exits 0 — the unit stays "active (exited)" and ExecStop=stop.sh runs
+#     ONLY on an explicit systemctl stop (or shutdown), not on start exit.
+#   - The wedge watchdog survives the start-script exit: start.sh spawns it
+#     detached (nohup), and the unit sets KillMode=mixed so a unit stop does
+#     not cgroup-kill the watchdog — ExecStop TERMs it deliberately first.
+#   - ExecStart passes --replace: at boot a stale container (unclean
+#     shutdown) may still exist; start.sh is explicitly allowed to remove it.
+#
 # Reboot test (the proof the unit works):
 #   sudo systemctl reboot
 #   ... after boot:
 #   systemctl status b70-lumnus-prod          # active (exited), enabled
 #   scripts/status.sh                          # container up, API READY,
 #                                              # watchdog armed
+#   ./tests/verify.sh                          # full gate
+#   pgrep -af wedge-watchdog.sh                # EXACTLY ONE watchdog
 #   journalctl -u b70-lumnus-prod -b | tail    # start.sh's gate log
 # ============================================================================
 set -euo pipefail
@@ -90,5 +102,7 @@ Reboot test (proof):
   # after boot:
   systemctl status b70-lumnus-prod     # active (exited) = lane launched+READY
   scripts/status.sh                    # container up, API READY, watchdog armed
+  pgrep -af wedge-watchdog.sh          # EXACTLY ONE watchdog
+  ./tests/verify.sh                    # full gate
   journalctl -u b70-lumnus-prod -b | tail
 EOF

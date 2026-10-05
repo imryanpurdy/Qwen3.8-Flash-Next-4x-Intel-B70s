@@ -17,10 +17,9 @@
 # - ExecStop uses the stop path with a generous timeout: a graceful watchdog
 #   TERM + container rm normally takes seconds; TimeoutStopSec covers a slow
 #   docker teardown.
-# - Restart=on-failure + StartLimitBurst=3 mirrors the watchdog's bounded
-#   retry philosophy: three failed full starts, then give up loudly.
-#   (Runtime wedge recovery is the watchdog's job; this unit only covers
-#   start-time failure.)
+# - Type=oneshot means systemd will NOT re-run a failed start (Restart= is
+#   inert for oneshot). Start-time failure fails the unit loudly; runtime
+#   wedge recovery is the watchdog's job (bounded retries, then a loud exit).
 # - The unit is Type=oneshot with RemainAfterExit=yes: start.sh blocks until
 #   READY (~4-5 min), then exits 0. "systemctl is-active" tracks the lane's
 #   launched-or-not state; liveness itself is the watchdog's job.
@@ -39,19 +38,30 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Watchdog survival across the start-script exit: start.sh spawns the wedge
+# watchdog with nohup; it lands in THIS unit's control group. That is safe
+# because a Type=oneshot+RemainAfterExit unit does NOT tear its cgroup down
+# when ExecStart exits — the watchdog (and the container) keep running while
+# the unit sits "active (exited)". The cgroup is only cleaned on an explicit
+# `systemctl stop`, and by then ExecStop=stop.sh has ALREADY stopped the
+# watchdog deliberately (watchdog TERM first, then the container) — so the
+# stop order contract is preserved and no orphan survives a stop.
+KillMode=mixed
 User=%USER%
 Group=%USER%
 WorkingDirectory=%REPO_ROOT%
-ExecStart=%REPO_ROOT%/scripts/start.sh
+# --replace: at boot the previous container may still exist (unclean shutdown);
+# start.sh is explicitly allowed to replace it. Without this flag start.sh
+# refuses to touch a live container (2026-10-05 guard law).
+ExecStart=%REPO_ROOT%/scripts/start.sh --replace
 ExecStop=%REPO_ROOT%/scripts/stop.sh
 TimeoutStartSec=1200
 TimeoutStopSec=120
-Restart=on-failure
-RestartSec=30
-# A failed full start retries up to 3 times (matches the watchdog's retry
-# philosophy); then the unit fails loudly and stays down.
-StartLimitBurst=3
-StartLimitIntervalSec=600
+# NOTE: Type=oneshot services are NEVER restarted by systemd — Restart= would
+# be inert here (and misleading). Runtime wedge recovery is the watchdog's
+# job (it survives the start-script exit — see the watchdog note above); a
+# FAILED start (exit != 0) fails the boot unit loudly and the lane stays down
+# until a human or the watchdog's own restart path acts.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=b70-lumnus-prod

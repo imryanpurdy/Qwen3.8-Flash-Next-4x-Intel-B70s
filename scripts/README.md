@@ -7,7 +7,7 @@ rollback launcher lives at `../rollback/devan-fork/start.sh` (see
 
 | Script | Purpose |
 |---|---|
-| `start.sh` | Production (Lumnus lane) entrypoint: preflight → weights tree check → pre-boot XPU gate → launch → ready gate; spawns the wedge watchdog. Flags: `--launch --no-preflight`; subcommands `status/logs/stop/restart` |
+| `start.sh` | Production (Lumnus lane) entrypoint: preflight → weights tree check → pre-boot XPU gate → launch → ready gate; spawns the wedge watchdog. Flags: `--launch --no-preflight --dry-run --replace` (`--replace` = explicit permission to stop a running container); subcommands `status/logs/stop/restart` |
 | `stop.sh` | Graceful stop: watchdog TERM first, then the container (order matters) |
 | `../check-weights.sh` | W4A16 snapshot presence + pinned-rev identity check; hard-fail on wrong/missing (wrong-weights guard) |
 | `wedge-watchdog.sh` | Xe2 Level-Zero wedge watchdog: liveness gen-probe, py-spy capture first, restarts ≤ `WEDGE_WATCHDOG_RETRIES`, gives up loudly. Mandatory; start.sh refuses without it |
